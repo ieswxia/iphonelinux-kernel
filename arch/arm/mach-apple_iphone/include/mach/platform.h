@@ -56,14 +56,7 @@
 #define VERSATILE_SYS_LED_OFFSET              0x08
 #define VERSATILE_SYS_OSC0_OFFSET             0x0C
 
-#if defined(CONFIG_ARCH_VERSATILE_PB)
-#define VERSATILE_SYS_OSC1_OFFSET             0x10
-#define VERSATILE_SYS_OSC2_OFFSET             0x14
-#define VERSATILE_SYS_OSC3_OFFSET             0x18
-#define VERSATILE_SYS_OSC4_OFFSET             0x1C
-#elif defined(CONFIG_MACH_VERSATILE_AB)
 #define VERSATILE_SYS_OSC1_OFFSET             0x1C
-#endif
 
 #define VERSATILE_SYS_OSCCLCD_OFFSET          0x1c
 
@@ -488,7 +481,6 @@
 #define VERSATILE_CSR_BASE             0x10000000
 #define VERSATILE_CSR_SIZE             0x10000000
 
-#ifdef CONFIG_MACH_VERSATILE_AB
 /*
  * IB2 Versatile/AB expansion board definitions
  */
@@ -503,7 +495,6 @@
 #define VERSATILE_IB2_CTL_BASE		(VERSATILE_IB2_BASE + 0x03000000)
 #define VERSATILE_IB2_CTRL		(VERSATILE_IB2_CTL_BASE + 0)
 #define VERSATILE_IB2_STAT		(VERSATILE_IB2_CTL_BASE + 4)
-#endif
 
 #endif
 

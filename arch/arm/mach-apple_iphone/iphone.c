@@ -22,7 +22,6 @@
 #include <linux/init.h>
 #include <linux/device.h>
 #include <linux/sysdev.h>
-#include <linux/amba/bus.h>
 #include <linux/io.h>
 
 #include <mach/hardware.h>
@@ -33,13 +32,13 @@
 
 #include "core.h"
 
-MACHINE_START(VERSATILE_AB, "ARM-Versatile AB")
+MACHINE_START(APPLE_IPHONE, "Apple iPhone")
 	/* Maintainer: ARM Ltd/Deep Blue Solutions Ltd */
-	.phys_io	= 0x101f1000,
-	.io_pg_offst	= ((0xf11f1000) >> 18) & 0xfffc,
-	.boot_params	= 0x00000100,
+	.phys_io	= 0x38000000,
+	.io_pg_offst	= ((0x3e500000) >> 18) & 0xfffc,
+	.boot_params	= 0x09000000,
 	.map_io		= versatile_map_io,
 	.init_irq	= versatile_init_irq,
 	.timer		= &versatile_timer,
-	.init_machine	= versatile_init,
+	.init_machine	= iphone_init,
 MACHINE_END

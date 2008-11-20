@@ -17,25 +17,28 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#define AMBA_UART_DR	(*(volatile unsigned char *)0x101F1000)
-#define AMBA_UART_LCRH	(*(volatile unsigned char *)0x101F102C)
-#define AMBA_UART_CR	(*(volatile unsigned char *)0x101F1030)
-#define AMBA_UART_FR	(*(volatile unsigned char *)0x101F1018)
+
+#define IPHONE_UART_UFSTAT_TXFIFO_FULL (0x1 << 9)
+#define IPHONE_UART_UTRSTAT_TRANSMITTEREMPTY 0x4
+#define IPHONE_UART0_UTRSTAT (*(volatile unsigned char*)(0x3CC00000 + 0x0 + 0x10))
+#define IPHONE_UART0_UFSTAT (*(volatile unsigned char*)(0x3CC00000 + 0x0 + 0x18))
+#define IPHONE_UART0_UTXH (*(volatile unsigned char*)(0x3CC00000 + 0x0 + 0x20))
 
 /*
  * This does not append a newline
  */
 static inline void putc(int c)
 {
-	while (AMBA_UART_FR & (1 << 5))
+	while ((IPHONE_UART0_UTRSTAT & IPHONE_UART_UTRSTAT_TRANSMITTEREMPTY) == 0)
 		barrier();
 
-	AMBA_UART_DR = c;
+	IPHONE_UART0_UTXH = c;
+
 }
 
 static inline void flush(void)
 {
-	while (AMBA_UART_FR & (1 << 3))
+	while ((IPHONE_UART0_UTRSTAT & IPHONE_UART_UTRSTAT_TRANSMITTEREMPTY) == 0)
 		barrier();
 }
 

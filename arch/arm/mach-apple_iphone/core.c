@@ -162,7 +162,6 @@ static struct map_desc versatile_io_desc[] __initdata = {
 		.length		= SZ_4K * 9,
 		.type		= MT_DEVICE
 	},
-#ifdef CONFIG_MACH_VERSATILE_AB
  	{
 		.virtual	=  IO_ADDRESS(VERSATILE_GPIO0_BASE),
 		.pfn		= __phys_to_pfn(VERSATILE_GPIO0_BASE),
@@ -174,7 +173,6 @@ static struct map_desc versatile_io_desc[] __initdata = {
 		.length		= SZ_64M,
 		.type		= MT_DEVICE
 	},
-#endif
 #ifdef CONFIG_DEBUG_LL
  	{
 		.virtual	=  IO_ADDRESS(VERSATILE_UART0_BASE),
@@ -182,42 +180,6 @@ static struct map_desc versatile_io_desc[] __initdata = {
 		.length		= SZ_4K,
 		.type		= MT_DEVICE
 	},
-#endif
-#ifdef CONFIG_PCI
- 	{
-		.virtual	=  IO_ADDRESS(VERSATILE_PCI_CORE_BASE),
-		.pfn		= __phys_to_pfn(VERSATILE_PCI_CORE_BASE),
-		.length		= SZ_4K,
-		.type		= MT_DEVICE
-	}, {
-		.virtual	=  (unsigned long)VERSATILE_PCI_VIRT_BASE,
-		.pfn		= __phys_to_pfn(VERSATILE_PCI_BASE),
-		.length		= VERSATILE_PCI_BASE_SIZE,
-		.type		= MT_DEVICE
-	}, {
-		.virtual	=  (unsigned long)VERSATILE_PCI_CFG_VIRT_BASE,
-		.pfn		= __phys_to_pfn(VERSATILE_PCI_CFG_BASE),
-		.length		= VERSATILE_PCI_CFG_BASE_SIZE,
-		.type		= MT_DEVICE
-	},
-#if 0
- 	{
-		.virtual	=  VERSATILE_PCI_VIRT_MEM_BASE0,
-		.pfn		= __phys_to_pfn(VERSATILE_PCI_MEM_BASE0),
-		.length		= SZ_16M,
-		.type		= MT_DEVICE
-	}, {
-		.virtual	=  VERSATILE_PCI_VIRT_MEM_BASE1,
-		.pfn		= __phys_to_pfn(VERSATILE_PCI_MEM_BASE1),
-		.length		= SZ_16M,
-		.type		= MT_DEVICE
-	}, {
-		.virtual	=  VERSATILE_PCI_VIRT_MEM_BASE2,
-		.pfn		= __phys_to_pfn(VERSATILE_PCI_MEM_BASE2),
-		.length		= SZ_16M,
-		.type		= MT_DEVICE
-	},
-#endif
 #endif
 };
 
@@ -543,7 +505,6 @@ static void versatile_clcd_disable(struct clcd_fb *fb)
 	val &= ~SYS_CLCD_NLCDIOON | SYS_CLCD_PWR3V5SWITCH;
 	writel(val, sys_clcd);
 
-#ifdef CONFIG_MACH_VERSATILE_AB
 	/*
 	 * If the LCD is Sanyo 2x5 in on the IB2 board, turn the back-light off
 	 */
@@ -555,7 +516,6 @@ static void versatile_clcd_disable(struct clcd_fb *fb)
 		ctrl &= ~0x01;
 		writel(ctrl, versatile_ib2_ctrl);
 	}
-#endif
 }
 
 /*
@@ -592,7 +552,6 @@ static void versatile_clcd_enable(struct clcd_fb *fb)
 	val |= SYS_CLCD_NLCDIOON | SYS_CLCD_PWR3V5SWITCH;
 	writel(val, sys_clcd);
 
-#ifdef CONFIG_MACH_VERSATILE_AB
 	/*
 	 * If the LCD is Sanyo 2x5 in on the IB2 board, turn the back-light on
 	 */
@@ -604,7 +563,6 @@ static void versatile_clcd_enable(struct clcd_fb *fb)
 		ctrl |= 0x01;
 		writel(ctrl, versatile_ib2_ctrl);
 	}
-#endif
 }
 
 static unsigned long framesize = SZ_1M;
@@ -782,7 +740,7 @@ static void versatile_leds_event(led_event_t ledevt)
 }
 #endif	/* CONFIG_LEDS */
 
-void __init versatile_init(void)
+void __init iphone_init(void)
 {
 	int i;
 
