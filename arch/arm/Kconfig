@@ -199,6 +199,17 @@ choice
 	prompt "ARM system type"
 	default ARCH_VERSATILE
 
+config MACH_APPLE_IPHONE
+	bool "Apple iPhone"
+	select ARM_AMBA
+	select ARM_VIC
+	select HAVE_CLK
+	select ICST307
+	select GENERIC_TIME
+	select GENERIC_CLOCKEVENTS
+	help
+          Apple's iPhone!
+
 config ARCH_AAEC2000
 	bool "Agilent AAEC-2000 based"
 	select ARM_AMBA
@@ -550,6 +561,8 @@ config ARCH_MSM
 	  and controls some vital subsystems (clock and power control, etc).
 
 endchoice
+
+source "arch/arm/mach-apple_iphone/Kconfig"
 
 source "arch/arm/mach-clps711x/Kconfig"
 

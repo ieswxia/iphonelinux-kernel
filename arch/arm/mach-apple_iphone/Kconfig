@@ -1,0 +1,15 @@
+menu "Apple iPhone platform type"
+	depends on MACH_APPLE_IPHONE
+
+config ARCH_VERSATILE_PB
+	bool "Support Versatile/PB platform"
+	default y
+	help
+	  Include support for the ARM(R) Versatile/PB platform.
+
+config MACH_VERSATILE_AB
+	bool "Support Versatile/AB platform"
+	help
+	  Include support for the ARM(R) Versatile/AP platform.
+
+endmenu
