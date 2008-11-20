@@ -539,10 +539,23 @@ void __init __weak thread_info_cache_init(void)
 {
 }
 
+#include <mach/uncompress.h>
+
 asmlinkage void __init start_kernel(void)
 {
 	char * command_line;
 	extern struct kernel_param __start___param[], __stop___param[];
+
+	putc('\r');
+	putc('\n');
+	putc('S');
+	putc('t');
+	putc('a');
+	putc('r');
+	putc('t');
+	putc('\r');
+	putc('\n');
+	flush();
 
 	smp_setup_processor_id();
 
@@ -559,17 +572,84 @@ asmlinkage void __init start_kernel(void)
 	early_boot_irqs_off();
 	early_init_irq_lock_class();
 
+	putc('\r');
+	putc('\n');
+	putc('I');
+	putc('R');
+	putc('Q');
+	putc('0');
+	putc('\r');
+	putc('\n');
+	flush();
 /*
  * Interrupts are still disabled. Do necessary setups, then
  * enable them
  */
 	lock_kernel();
+	putc('\r');
+	putc('\n');
+	putc('l');
+	putc('o');
+	putc('c');
+	putc('k');
+	putc('\r');
+	putc('\n');
+	flush();
 	tick_init();
+	putc('\r');
+	putc('\n');
+	putc('t');
+	putc('i');
+	putc('c');
+	putc('k');
+	putc('\r');
+	putc('\n');
+	flush();
 	boot_cpu_init();
+	putc('\r');
+	putc('\n');
+	putc('c');
+	putc('p');
+	putc('u');
+	putc('\r');
+	putc('\n');
+	flush();
 	page_address_init();
+	putc('\r');
+	putc('\n');
+	putc('p');
+	putc('a');
+	putc('g');
+	putc('e');
+	putc('\r');
+	putc('\n');
+	flush();
 	printk(KERN_NOTICE);
 	printk(linux_banner);
+	putc('\r');
+	putc('\n');
+	putc('p');
+	putc('r');
+	putc('e');
+	putc('-');
+	putc('s');
+	putc('e');
+	putc('t');
+	putc('u');
+	putc('p');
+	putc('\r');
+	putc('\n');
 	setup_arch(&command_line);
+	putc('\r');
+	putc('\n');
+	putc('s');
+	putc('e');
+	putc('t');
+	putc('u');
+	putc('p');
+	putc('\r');
+	putc('\n');
+	flush();
 	mm_init_owner(&init_mm, &init_task);
 	setup_command_line(command_line);
 	unwind_setup();

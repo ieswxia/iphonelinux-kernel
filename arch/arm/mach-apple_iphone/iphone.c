@@ -35,7 +35,7 @@
 MACHINE_START(APPLE_IPHONE, "Apple iPhone")
 	/* Maintainer: ARM Ltd/Deep Blue Solutions Ltd */
 	.phys_io	= 0x38000000,
-	.io_pg_offst	= ((0x3e500000) >> 18) & 0xfffc,
+	.io_pg_offst	= ((0x38000000) >> 18) & 0xfffc,
 	.boot_params	= 0x09000000,
 	.map_io		= versatile_map_io,
 	.init_irq	= versatile_init_irq,

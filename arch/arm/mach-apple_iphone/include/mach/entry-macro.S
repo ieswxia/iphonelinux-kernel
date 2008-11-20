@@ -1,44 +1,33 @@
 /*
- * arch/arm/mach-versatile/include/mach/entry-macro.S
+ * arch/arm/mach-apple_iphone/include/mach/entry-macro.S
  *
- * Low-level IRQ helper macros for Versatile platforms
+ * Low-level IRQ helper macros for the Apple iPhone
  *
  * This file is licensed under  the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
  * warranty of any kind, whether express or implied.
  */
 #include <mach/hardware.h>
-#include <asm/hardware/vic.h>
 
 		.macro	disable_fiq
 		.endm
 
 		.macro  get_irqnr_preamble, base, tmp
-		ldr	\base, =IO_ADDRESS(VERSATILE_VIC_BASE)
 		.endm
 
 		.macro  arch_ret_to_user, tmp1, tmp2
 		.endm
 
 		.macro	get_irqnr_and_base, irqnr, irqstat, base, tmp
-		ldr	\irqstat, [\base, #VIC_IRQ_STATUS]	@ get masked status
-		mov	\irqnr, #0
-		teq	\irqstat, #0
-		beq	1003f
-
-1001:		tst	\irqstat, #15
-		bne	1002f
-		add	\irqnr, \irqnr, #4
-		movs	\irqstat, \irqstat, lsr #4
-		bne	1001b
-1002:		tst	\irqstat, #1
-		bne	1003f
-		add	\irqnr, \irqnr, #1
-		movs	\irqstat, \irqstat, lsr #1
-		bne	1002b
-1003:		/* EQ will be set if no irqs pending */
-
-@		clz	\irqnr, \irqstat
-@1003:		/* EQ will be set if we reach MAXIRQNUM */
+		mov	\tmp, #0
+		ldr	\base, =0x38E00000
+		ldr	\irqstat, [\base, #0]           @ get masked status
+		cmp	\irqstat, \tmp
+		addeq	\base, \base, #0x100000
+		ldreq	\irqstat, [\base, #0]           @ get masked status
+		cmpeq	\irqstat, #0
+		ldr	\irqnr, [\base, #0xF00]         @ read for VICADDR[01]
 		.endm
 
+		.macro irq_prio_table
+		.endm

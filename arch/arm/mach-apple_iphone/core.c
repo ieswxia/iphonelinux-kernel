@@ -740,9 +740,22 @@ static void versatile_leds_event(led_event_t ledevt)
 }
 #endif	/* CONFIG_LEDS */
 
+#include <mach/uncompress.h>
+
 void __init iphone_init(void)
 {
 	int i;
+
+	putc('\n');
+	putc('i');
+	putc('P');
+	putc('h');
+	putc('o');
+	putc('n');
+	putc('e');
+	putc('\n');
+	flush();
+
 
 	clk_register(&versatile_clcd_clk);
 
