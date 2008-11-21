@@ -201,12 +201,8 @@ choice
 
 config MACH_APPLE_IPHONE
 	bool "Apple iPhone"
-	select ARM_AMBA
-	select ARM_VIC
 	select HAVE_CLK
-	select ICST307
-	select GENERIC_TIME
-	select GENERIC_CLOCKEVENTS
+	select GENERIC_GPIO
 	help
           Apple's iPhone!
 
