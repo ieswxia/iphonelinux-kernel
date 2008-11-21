@@ -10,11 +10,13 @@
  *
 */
 
+#include <mach/hardware.h>
+
 		.macro	addruart,rx
 		mrc	p15, 0, \rx, c1, c0
 		tst	\rx, #1			@ MMU enabled?
 		ldreq	\rx, =0x3CC00000
-		ldrne	\rx, =0x3CC00000
+		ldrne	\rx, =IO_ADDRESS(0x3CC00000)
 		.endm
 
 		.macro  senduart,rd,rx

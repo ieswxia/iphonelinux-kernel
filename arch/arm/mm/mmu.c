@@ -784,7 +784,6 @@ void __init reserve_node_zero(pg_data_t *pgdat)
 		reserve_bootmem_node(pgdat, PHYS_OFFSET, res_size,
 				BOOTMEM_DEFAULT);
 }
-
 /*
  * Set up device the mappings.  Since we clear out the page tables for all
  * mappings above VMALLOC_END, we will remove any debug device mappings.
@@ -868,6 +867,7 @@ static void __init devicemaps_init(struct machine_desc *mdesc)
 	 */
 	local_flush_tlb_all();
 	flush_cache_all();
+
 }
 
 /*

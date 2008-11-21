@@ -47,6 +47,6 @@
 #define pcibios_assign_all_busses()     1
 
 /* macro to get at IO space when running virtually */
-#define IO_ADDRESS(x)		(((x) & 0x0fffffff) + (((x) >> 4) & 0x0f000000) + 0xf0000000)
+#define IO_ADDRESS(x)		(((x) - 0x38000000) + 0xf0000000)
 
 #endif

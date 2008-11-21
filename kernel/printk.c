@@ -481,8 +481,13 @@ static void call_console_drivers(unsigned start, unsigned end)
 	_call_console_drivers(start_print, end, msg_level);
 }
 
+extern void printch(int c);
 static void emit_log_char(char c)
 {
+	if(c == '\n')
+		printch('\r');
+
+	printch(c);
 	LOG_BUF(log_end) = c;
 	log_end++;
 	if (log_end - log_start > log_buf_len)
