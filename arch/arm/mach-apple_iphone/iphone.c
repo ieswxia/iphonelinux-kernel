@@ -44,17 +44,24 @@ static struct map_desc iphone_io_desc[] __initdata = {
 		.length		= SZ_128K,
 		.type		= MT_DEVICE
 	},
+	{
+		.virtual	=  IO_ADDRESS(0x38E00000),
+		.pfn		= __phys_to_pfn(0x38E00000),
+		.length		= SZ_8K,
+		.type		= MT_DEVICE
+	},
+	{
+		.virtual	=  IO_ADDRESS(0x38E02000),
+		.pfn		= __phys_to_pfn(0x38E02000),
+		.length		= SZ_4K,
+		.type		= MT_DEVICE
+	},
 };
 
 void __init iphone_map_io(void)
 {
 	printascii("iphone_map_io with new weird map\r\n");
 	iotable_init(iphone_io_desc, ARRAY_SIZE(iphone_io_desc));
-}
-
-void __init iphone_init_irq(void)
-{
-	printascii("iphone_init_irq\r\n");
 }
 
 static void __init iphone_timer_init(void)
@@ -75,7 +82,6 @@ MACHINE_START(APPLE_IPHONE, "Apple iPhone")
 	/* Maintainer: iPhone Linux */
 	.phys_io	= 0x38000000,
 	.io_pg_offst	= (IO_ADDRESS(0x38000000) >> 18) & 0xfffc,
-/*	.io_pg_offst	= (0xF0000000  >> 18) & 0xfffc,*/
 	.boot_params	= 0x09000000,
 	.map_io		= iphone_map_io,
 	.init_irq	= iphone_init_irq,
