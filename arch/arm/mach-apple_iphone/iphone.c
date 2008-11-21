@@ -34,8 +34,6 @@
 #include <asm/mach/irq.h>
 
 #include "core.h"
-extern void printascii(const char* str);
-extern void printhex8(uint32_t num);
 
 static struct map_desc iphone_io_desc[] __initdata = {
 	{
@@ -56,27 +54,24 @@ static struct map_desc iphone_io_desc[] __initdata = {
 		.length		= SZ_4K,
 		.type		= MT_DEVICE
 	},
+	{
+		.virtual	=  IO_ADDRESS(0x3E200000),
+		.pfn		= __phys_to_pfn(0x3E200000),
+		.length		= SZ_1M,
+		.type		= MT_DEVICE
+	},
 };
 
 void __init iphone_map_io(void)
 {
-	printascii("iphone_map_io with new weird map\r\n");
+	printk("iphone: initializing io map\n");
 	iotable_init(iphone_io_desc, ARRAY_SIZE(iphone_io_desc));
-}
-
-static void __init iphone_timer_init(void)
-{
-	printascii("iphone_timer_init\r\n");
 }
 
 void __init iphone_init(void)
 {
-	printascii("iphone_init\r\n");
+	printk("iphone_init\r\n");
 }
-
-struct sys_timer iphone_timer = {
-	.init		= iphone_timer_init,
-};
 
 MACHINE_START(APPLE_IPHONE, "Apple iPhone")
 	/* Maintainer: iPhone Linux */

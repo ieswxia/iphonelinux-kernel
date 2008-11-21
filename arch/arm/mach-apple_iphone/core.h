@@ -1,8 +1,7 @@
 /*
- *  linux/arch/arm/mach-versatile/core.h
+ *  linux/arch/arm/mach-apple_iphone/core.h
  *
- *  Copyright (C) 2004 ARM Limited
- *  Copyright (C) 2000 Deep Blue Solutions Ltd
+ *  Copyright (C) 2008 Yiduo Wang
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,10 +18,20 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#ifndef __ASM_ARCH_VERSATILE_H
-#define __ASM_ARCH_VERSATILE_H
+#ifndef __ASM_ARCH_IPHONE_H
+#define __ASM_ARCH_IPHONE_H
 
-#include <linux/amba/bus.h>
+#include <linux/init.h>
+#include <linux/device.h>
+#include <linux/sysdev.h>
+#include <linux/io.h>
+
+#include <mach/hardware.h>
+#include <asm/irq.h>
+#include <asm/mach-types.h>
+
+#include <asm/mach/time.h>
+#include <asm/mach/irq.h>
 
 extern void __init iphone_init(void);
 extern void __init iphone_init_irq(void);
@@ -30,4 +39,5 @@ extern void __init iphone_map_io(void);
 extern struct sys_timer versatile_timer;
 extern unsigned int mmc_status(struct device *dev);
 
+extern struct sys_timer iphone_timer;
 #endif

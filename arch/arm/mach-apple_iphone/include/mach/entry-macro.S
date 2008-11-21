@@ -20,10 +20,10 @@
 
 		.macro	get_irqnr_and_base, irqnr, irqstat, base, tmp
 		mov	\tmp, #0
-		ldr	\base, =0x38E00000
+		ldr	\base, =IO_ADDRESS(0x38E00000)
 		ldr	\irqstat, [\base, #0]           @ get masked status
 		cmp	\irqstat, \tmp
-		addeq	\base, \base, #0x100000
+		addeq	\base, \base, #0x1000
 		ldreq	\irqstat, [\base, #0]           @ get masked status
 		cmpeq	\irqstat, #0
 		ldr	\irqnr, [\base, #0xF00]         @ read for VICADDR[01]
