@@ -1,9 +1,9 @@
 /*
- *  arch/arm/mach-versatile/include/mach/timex.h
+ *  arch/arm/mach-apple_iphone/include/mach/timex.h
  *
- *  Versatile architecture timex specifications
+ *  Apple iPhone timex specifications
  *
- *  Copyright (C) 2003 ARM Limited
+ *  Copyright (C) 2008 Yiduo Wang
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

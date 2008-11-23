@@ -1,5 +1,5 @@
 /*
- *  arch/arm/mach-versatile/include/mach/io.h
+ *  arch/arm/mach-apple_iphone/include/mach/io.h
  *
  *  Copyright (C) 2003 ARM Limited
  *

@@ -1,135 +1,94 @@
-/*
- *  linux/arch/arm/mach-versatile/clock.c
- *
- *  Copyright (C) 2004 ARM Limited.
- *  Written by Deep Blue Solutions Limited.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- */
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/list.h>
-#include <linux/errno.h>
-#include <linux/err.h>
-#include <linux/string.h>
-#include <linux/clk.h>
-#include <linux/mutex.h>
-
-#include <asm/hardware/icst307.h>
-
+#include <linux/init.h>
+#include <linux/device.h>
+#include <linux/io.h>
+#include <mach/hardware.h>
 #include "clock.h"
 
-static LIST_HEAD(clocks);
-static DEFINE_MUTEX(clocks_mutex);
+// Constants
+#define NUM_PLL 4
+#define FREQUENCY_BASE 12000000
+#define PLL0_INFREQ_DIV FREQUENCY_BASE /* 12 MHz */
+#define PLL1_INFREQ_DIV FREQUENCY_BASE /* 12 MHz */
+#define PLL2_INFREQ_DIV FREQUENCY_BASE /* 12 MHz */
+#define PLL3_INFREQ_DIV 13500000 /* 13.5 MHz */
+#define PLL0_INFREQ_MULT 0x4000
+#define PLL1_INFREQ_MULT 0x4000
+#define PLL2_INFREQ_MULT 0x4000
+#define PLL3_INFREQ_MULT FREQUENCY_BASE
 
-struct clk *clk_get(struct device *dev, const char *id)
-{
-	struct clk *p, *clk = ERR_PTR(-ENOENT);
+// Devices
+#define CLOCK1 IO_ADDRESS(0x3C500000)
 
-	mutex_lock(&clocks_mutex);
-	list_for_each_entry(p, &clocks, node) {
-		if (strcmp(id, p->name) == 0 && try_module_get(p->owner)) {
-			clk = p;
-			break;
-		}
+// Registers
+#define CLOCK1_CONFIG0 0x0
+#define CLOCK1_CONFIG1 0x4
+#define CLOCK1_CONFIG2 0x8
+#define CLOCK1_PLL0CON 0x20
+#define CLOCK1_PLL1CON 0x24
+#define CLOCK1_PLL2CON 0x28
+#define CLOCK1_PLL3CON 0x2C
+#define CLOCK1_PLLMODE 0x44
+#define CLOCK1_CL2_GATES 0x48
+#define CLOCK1_CL3_GATES 0x4C
+
+// Values
+#define CLOCK1_Separator 0x20
+
+#define CLOCK1_CLOCKPLL(x) GET_BITS((x), 12, 2)
+#define CLOCK1_CLOCKDIVIDER(x) (GET_BITS((x), 0, 4) + 1)
+#define CLOCK1_CLOCKHASDIVIDER(x) GET_BITS((x), 8, 1)
+
+#define CLOCK1_MEMORYPLL(x) GET_BITS((x), 12, 2)
+#define CLOCK1_MEMORYDIVIDER(x) (GET_BITS((x), 16, 4) + 1)
+#define CLOCK1_MEMORYHASDIVIDER(x) GET_BITS((x), 24, 1)
+
+#define CLOCK1_BUSPLL(x) GET_BITS((x), 12, 2)
+#define CLOCK1_BUSDIVIDER(x) (GET_BITS((x), 16, 4) + 1)
+#define CLOCK1_BUSHASDIVIDER(x) GET_BITS((x), 24, 1)
+
+#define CLOCK1_UNKNOWNPLL(x) GET_BITS((x), 12, 2)
+#define CLOCK1_UNKNOWNDIVIDER1(x) (GET_BITS((x), 0, 4) + 1)
+#define CLOCK1_UNKNOWNDIVIDER2(x) (GET_BITS((x), 4, 4) + 1)
+#define CLOCK1_UNKNOWNDIVIDER(x) (CLOCK1_UNKNOWNDIVIDER1(x) * CLOCK1_UNKNOWNDIVIDER2(x))
+#define CLOCK1_UNKNOWNHASDIVIDER(x) GET_BITS((x), 8, 1)
+
+#define CLOCK1_PERIPHERALDIVIDER(x) GET_BITS((x), 20, 2)
+
+#define CLOCK1_DISPLAYPLL(x) GET_BITS((x), 28, 2)
+#define CLOCK1_DISPLAYDIVIDER(x) GET_BITS((x), 16, 4)
+#define CLOCK1_DISPLAYHASDIVIDER(x) GET_BITS((x), 24, 1)
+
+#define CLOCK1_PLLMODE_ONOFF(x, y) (((x) >> (y)) & 0x1)
+#define CLOCK1_PLLMODE_DIVIDERMODE(x, y) (((x) >> (y + 4)) & 0x1)
+#define CLOCK1_PLLMODE_DIVIDE 1
+#define CLOCK1_PLLMODE_MULTIPLY 0
+
+#define CLOCK1_MDIV(x) (((x) >> 8) & 0x3FF)
+#define CLOCK1_PDIV(x) (((x) >> 24) & 0x3F)
+#define CLOCK1_SDIV(x) ((x) & 0x3)
+
+void iphone_clock_gate_switch(u32 gate, int on_off) {
+	u32 gate_register;
+	u32 gate_flag;
+	u32 gates;
+
+	if(gate < CLOCK1_Separator) {
+		gate_register = CLOCK1 + CLOCK1_CL2_GATES;
+		gate_flag = gate;
+	} else {
+		gate_register = CLOCK1 + CLOCK1_CL3_GATES;
+		gate_flag = gate - CLOCK1_Separator;
 	}
-	mutex_unlock(&clocks_mutex);
 
-	return clk;
-}
-EXPORT_SYMBOL(clk_get);
+	gates = __raw_readl(gate_register);
 
-void clk_put(struct clk *clk)
-{
-	module_put(clk->owner);
-}
-EXPORT_SYMBOL(clk_put);
-
-int clk_enable(struct clk *clk)
-{
-	return 0;
-}
-EXPORT_SYMBOL(clk_enable);
-
-void clk_disable(struct clk *clk)
-{
-}
-EXPORT_SYMBOL(clk_disable);
-
-unsigned long clk_get_rate(struct clk *clk)
-{
-	return clk->rate;
-}
-EXPORT_SYMBOL(clk_get_rate);
-
-long clk_round_rate(struct clk *clk, unsigned long rate)
-{
-	return rate;
-}
-EXPORT_SYMBOL(clk_round_rate);
-
-int clk_set_rate(struct clk *clk, unsigned long rate)
-{
-	int ret = -EIO;
-
-	if (clk->setvco) {
-		struct icst307_vco vco;
-
-		vco = icst307_khz_to_vco(clk->params, rate / 1000);
-		clk->rate = icst307_khz(clk->params, vco) * 1000;
-
-		printk("Clock %s: setting VCO reg params: S=%d R=%d V=%d\n",
-			clk->name, vco.s, vco.r, vco.v);
-
-		clk->setvco(clk, vco);
-		ret = 0;
+	if(on_off) {
+		gates &= ~(1 << gate_flag);
+	} else {
+		gates |= 1 << gate_flag;
 	}
-	return ret;
+
+	__raw_writel(gates, gate_register);
+
 }
-EXPORT_SYMBOL(clk_set_rate);
 
-/*
- * These are fixed clocks.
- */
-static struct clk kmi_clk = {
-	.name	= "KMIREFCLK",
-	.rate	= 24000000,
-};
-
-static struct clk uart_clk = {
-	.name	= "UARTCLK",
-	.rate	= 24000000,
-};
-
-static struct clk mmci_clk = {
-	.name	= "MCLK",
-	.rate	= 33000000,
-};
-
-int clk_register(struct clk *clk)
-{
-	mutex_lock(&clocks_mutex);
-	list_add(&clk->node, &clocks);
-	mutex_unlock(&clocks_mutex);
-	return 0;
-}
-EXPORT_SYMBOL(clk_register);
-
-void clk_unregister(struct clk *clk)
-{
-	mutex_lock(&clocks_mutex);
-	list_del(&clk->node);
-	mutex_unlock(&clocks_mutex);
-}
-EXPORT_SYMBOL(clk_unregister);
-
-static int __init clk_init(void)
-{
-	clk_register(&kmi_clk);
-	clk_register(&uart_clk);
-	clk_register(&mmci_clk);
-	return 0;
-}
-arch_initcall(clk_init);

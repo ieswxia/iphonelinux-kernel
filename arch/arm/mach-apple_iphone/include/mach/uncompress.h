@@ -1,7 +1,7 @@
 /*
- *  arch/arm/mach-versatile/include/mach/uncompress.h
+ *  arch/arm/mach-apple_iphone/include/mach/uncompress.h
  *
- *  Copyright (C) 2003 ARM Limited
+ *  Copyright (C) 2008 Apple iPhone
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
