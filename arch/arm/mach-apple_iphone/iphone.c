@@ -39,7 +39,13 @@ static struct map_desc iphone_io_desc[] __initdata = {
 	{
 		.virtual	=  IO_ADDRESS(0x3CC00000),
 		.pfn		= __phys_to_pfn(0x3CC00000),
-		.length		= SZ_128K,
+		.length		= SZ_1M,
+		.type		= MT_DEVICE
+	},
+	{
+		.virtual	=  IO_ADDRESS(0x3C500000),
+		.pfn		= __phys_to_pfn(0x3C500000),
+		.length		= SZ_1M,
 		.type		= MT_DEVICE
 	},
 	{
@@ -51,6 +57,12 @@ static struct map_desc iphone_io_desc[] __initdata = {
 	{
 		.virtual	=  IO_ADDRESS(0x38E02000),
 		.pfn		= __phys_to_pfn(0x38E02000),
+		.length		= SZ_4K,
+		.type		= MT_DEVICE
+	},
+	{
+		.virtual	=  IO_ADDRESS(0x3E300000),
+		.pfn		= __phys_to_pfn(0x3E300000),
 		.length		= SZ_4K,
 		.type		= MT_DEVICE
 	},

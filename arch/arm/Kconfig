@@ -208,6 +208,7 @@ config MACH_APPLE_IPHONE
 	select FB_CFB_COPYAREA
 	select FB_CFB_IMAGEBLIT
 	select FB_SYS_FOPS
+	select FRAMEBUFFER_CONSOLE
 	select HAVE_CLK
 	select GENERIC_GPIO
 	help
