@@ -228,7 +228,7 @@ int timer_init(int timer_id, u32 interval, u32 unknown2, u32 z, int option24, in
 	return 0;
 }
 
-void iphone_timer_get_rtc_ticks(uint64_t* ticks, uint64_t* sec_divisor) {
+static void iphone_timer_get_rtc_ticks(u64* ticks) {
 	register u32 ticksHigh;
 	register u32 ticksLow;
 	register u32 ticksHigh2;
@@ -240,8 +240,22 @@ void iphone_timer_get_rtc_ticks(uint64_t* ticks, uint64_t* sec_divisor) {
 		ticksHigh2 = __raw_readl(TIMER + TIMER_TICKSHIGH);
 	} while(ticksHigh != ticksHigh2);
 
-	*ticks = (((uint64_t)ticksHigh) << 32) | ticksLow;
-	*sec_divisor = TicksPerSec;
+	*ticks = (((u64)ticksHigh) << 32) | ticksLow;
+}
+
+u64 iphone_microtime(void) {
+        u64 ticks;
+
+        iphone_timer_get_rtc_ticks(&ticks);
+	// FIXME: Unreliable for large tick values
+        return ((u32)(ticks >> 2))/3;
+}
+
+int iphone_has_elapsed(u64 startTime, u64 elapsedTime) {
+	if((iphone_microtime() - startTime) >= elapsedTime)
+		return 1;
+	else
+		return 0;
 }
 
 static void callTimerHandler(int timer_id, uint32_t flags) {

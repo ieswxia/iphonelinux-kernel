@@ -201,6 +201,13 @@ choice
 
 config MACH_APPLE_IPHONE
 	bool "Apple iPhone"
+	select SERIAL_CORE
+	select SERIAL_CORE_CONSOLE
+	select FB
+	select FB_CFB_FILLRECT
+	select FB_CFB_COPYAREA
+	select FB_CFB_IMAGEBLIT
+	select FB_SYS_FOPS
 	select HAVE_CLK
 	select GENERIC_GPIO
 	help

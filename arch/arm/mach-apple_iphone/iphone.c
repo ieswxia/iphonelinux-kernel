@@ -1,8 +1,7 @@
 /*
- *  linux/arch/arm/mach-versatile/versatile_ab.c
+ *  linux/arch/arm/mach-apple_iphone/iphone.c
  *
- *  Copyright (C) 2004 ARM Limited
- *  Copyright (C) 2000 Deep Blue Solutions Ltd
+ *  Copyright (C) 2008 Yiduo Wang
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -34,6 +33,7 @@
 #include <asm/mach/irq.h>
 
 #include "core.h"
+#include "lcd.h"
 
 static struct map_desc iphone_io_desc[] __initdata = {
 	{
@@ -60,6 +60,18 @@ static struct map_desc iphone_io_desc[] __initdata = {
 		.length		= SZ_1M,
 		.type		= MT_DEVICE
 	},
+	{
+		.virtual	=  IO_ADDRESS(0x38400000),
+		.pfn		= __phys_to_pfn(0x38400000),
+		.length		= SZ_1M,
+		.type		= MT_DEVICE
+	},
+	{
+		.virtual	=  IO_ADDRESS(0x38900000),
+		.pfn		= __phys_to_pfn(0x38900000),
+		.length		= SZ_1M,
+		.type		= MT_DEVICE
+	},
 };
 
 void __init iphone_map_io(void)
@@ -70,7 +82,8 @@ void __init iphone_map_io(void)
 
 void __init iphone_init(void)
 {
-	printk("iphone_init\r\n");
+	printk("iphone: platform init\r\n");
+	iphonefb_init();
 }
 
 MACHINE_START(APPLE_IPHONE, "Apple iPhone")
