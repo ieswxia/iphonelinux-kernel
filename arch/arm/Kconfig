@@ -211,6 +211,7 @@ config MACH_APPLE_IPHONE
 	select FRAMEBUFFER_CONSOLE
 	select HAVE_CLK
 	select GENERIC_GPIO
+	select USB_GADGET
 	help
           Apple's iPhone!
 
