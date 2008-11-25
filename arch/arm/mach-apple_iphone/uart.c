@@ -392,10 +392,16 @@ static struct console iphone_console = {
 static int iphone_console_initconsole(void)
 {
 	iphone_uart_setup();
-	iphone_console.data = &iphone_reg,
+	iphone_console.data = &iphone_reg;
 	register_console(&iphone_console);
+	return 0;
+}
+
+static int __init iphone_console_moduleinit(void) {
+	uart_register_driver(&iphone_reg);
 	return 0;
 }
 
 console_initcall(iphone_console_initconsole);
 
+module_init(iphone_console_moduleinit);
