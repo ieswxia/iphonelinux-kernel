@@ -52,7 +52,6 @@
 #include <linux/fb.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
-#include <linux/vmalloc.h>
 
 #include <mach/hardware.h>
 
@@ -157,50 +156,10 @@ static struct fb_fix_screeninfo iphonefb_fix __devinitdata = {
 	.xpanstep =	0,
 	.ypanstep =	0,
 	.ywrapstep =	0, 
+	.line_length =	320 * 4, 
 	.accel =	FB_ACCEL_NONE,
 };
 
-/**********************************************************************
- *
- * Memory management
- *
- **********************************************************************/
-static void *rvmalloc(unsigned long size)
-{
-	void *mem;
-	unsigned long adr;
-
-	size = PAGE_ALIGN(size);
-	mem = vmalloc_32(size);
-	if (!mem)
-		return NULL;
-
-	memset(mem, 0, size); /* Clear the ram out, no junk to the user */
-	adr = (unsigned long) mem;
-	while (size > 0) {
-		SetPageReserved(vmalloc_to_page((void *)adr));
-		adr += PAGE_SIZE;
-		size -= PAGE_SIZE;
-	}
-
-	return mem;
-}
-
-static void rvfree(void *mem, unsigned long size)
-{
-	unsigned long adr;
-
-	if (!mem)
-		return;
-
-	adr = (unsigned long) mem;
-	while ((long) size > 0) {
-		ClearPageReserved(vmalloc_to_page((void *)adr));
-		adr += PAGE_SIZE;
-		size -= PAGE_SIZE;
-	}
-	vfree(mem);
-}
     /*
      * 	Modern graphical hardware not only supports pipelines but some 
      *  also support multiple monitors where each display can have its  
@@ -313,12 +272,12 @@ static int __init iphonefb_probe(struct platform_device *pdev)
     struct fb_info *info;
     struct iphonefb_par *par;
     struct device *device = &pdev->dev; /* or &pdev->dev */
-   
+
     /*
      * Dynamically allocate info and par
      */
     info = framebuffer_alloc(sizeof(struct iphonefb_par), device);
-    framebuffer_virtual_memory = rvmalloc(iphonefb_var.xres * iphonefb_var.yres * 4);
+    framebuffer_virtual_memory = kmalloc(iphonefb_var.xres * iphonefb_var.yres * 4, GFP_KERNEL);
     iphone_set_fb_address(DEFAULT_WINDOW_NUM, framebuffer_virtual_memory);
 
     if (!info) {
@@ -390,7 +349,7 @@ static int __init iphonefb_probe(struct platform_device *pdev)
     /*
      *  Cleanup
      */
-static int iphonefb_remove(struct platform_device *pdev)
+static int __init iphonefb_remove(struct platform_device *pdev)
 {
 	struct fb_info *info = platform_get_drvdata(pdev);
 
@@ -398,6 +357,7 @@ static int iphonefb_remove(struct platform_device *pdev)
 		unregister_framebuffer(info);
 		fb_dealloc_cmap(&info->cmap);
 		/* ... */
+		kfree(framebuffer_virtual_memory);
 		framebuffer_release(info);
 	}
 	return 0;
@@ -453,7 +413,6 @@ int __init iphonefb_init(void)
 
 static void __exit iphonefb_exit(void)
 {
-	rvfree(framebuffer_virtual_memory, iphonefb_var.xres * iphonefb_var.yres * 4);
 	platform_device_unregister(iphonefb_device);
 	platform_driver_unregister(&iphonefb_driver);
 }
