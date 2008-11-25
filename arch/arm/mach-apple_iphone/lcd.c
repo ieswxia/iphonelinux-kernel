@@ -52,6 +52,7 @@
 #include <linux/fb.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
+#include <linux/vmalloc.h>
 
 #include <mach/hardware.h>
 
@@ -140,8 +141,8 @@ static struct fb_var_screeninfo iphonefb_var __devinitdata = {
  * and userland applications the ability to use the same header file to 
  * avoid duplicate work and easy porting of software. 
  */
-struct xxx_par {
-	int x;
+struct iphonefb_par {
+	u32 palette[16];
 };
 
 /*
@@ -159,19 +160,60 @@ static struct fb_fix_screeninfo iphonefb_fix __devinitdata = {
 	.accel =	FB_ACCEL_NONE,
 };
 
+/**********************************************************************
+ *
+ * Memory management
+ *
+ **********************************************************************/
+static void *rvmalloc(unsigned long size)
+{
+	void *mem;
+	unsigned long adr;
+
+	size = PAGE_ALIGN(size);
+	mem = vmalloc_32(size);
+	if (!mem)
+		return NULL;
+
+	memset(mem, 0, size); /* Clear the ram out, no junk to the user */
+	adr = (unsigned long) mem;
+	while (size > 0) {
+		SetPageReserved(vmalloc_to_page((void *)adr));
+		adr += PAGE_SIZE;
+		size -= PAGE_SIZE;
+	}
+
+	return mem;
+}
+
+static void rvfree(void *mem, unsigned long size)
+{
+	unsigned long adr;
+
+	if (!mem)
+		return;
+
+	adr = (unsigned long) mem;
+	while ((long) size > 0) {
+		ClearPageReserved(vmalloc_to_page((void *)adr));
+		adr += PAGE_SIZE;
+		size -= PAGE_SIZE;
+	}
+	vfree(mem);
+}
     /*
      * 	Modern graphical hardware not only supports pipelines but some 
      *  also support multiple monitors where each display can have its  
      *  its own unique data. In this case each display could be  
      *  represented by a separate framebuffer device thus a separate 
-     *  struct fb_info. Now the struct xxx_par represents the graphics
+     *  struct fb_info. Now the struct iphonefb_par represents the graphics
      *  hardware state thus only one exist per card. In this case the 
-     *  struct xxx_par for each graphics card would be shared between 
+     *  struct iphonefb_par for each graphics card would be shared between 
      *  every struct fb_info that represents a framebuffer on that card. 
      *  This allows when one display changes it video resolution (info->var) 
      *  the other displays know instantly. Each display can always be
      *  aware of the entire hardware state that affects it because they share
-     *  the same xxx_par struct. The other side of the coin is multiple
+     *  the same iphonefb_par struct. The other side of the coin is multiple
      *  graphics cards that pass data around until it is finally displayed
      *  on one monitor. Such examples are the voodoo 1 cards and high end
      *  NUMA graphics servers. For this case we have a bunch of pars, each
@@ -234,6 +276,15 @@ static int iphonefb_release(struct fb_info *info, int user)
     return 0;
 }
 
+static int iphonefb_setcolreg(unsigned regno, unsigned red, unsigned green, unsigned blue, unsigned transp, struct fb_info *info) {
+	if(regno < 16) {
+		u32* pal = (u32*) info->pseudo_palette;
+		pal[regno] = ((red & 0xFF) << 16) | ((green & 0xFF) << 8) | (blue & 0xFF);
+	}
+
+	return 0;
+}
+
     /*
      *  Frame buffer operations
      */
@@ -244,6 +295,7 @@ static struct fb_ops iphonefb_ops = {
 	.fb_read	= fb_sys_read,
 	.fb_write	= fb_sys_write,
 	.fb_release	= iphonefb_release,
+	.fb_setcolreg   = iphonefb_setcolreg,
 	.fb_fillrect	= cfb_fillrect, 	/* Needed !!! */
 	.fb_copyarea	= cfb_copyarea,	/* Needed !!! */
 	.fb_imageblit	= cfb_imageblit,	/* Needed !!! */
@@ -259,14 +311,14 @@ static struct fb_ops iphonefb_ops = {
 static int __init iphonefb_probe(struct platform_device *pdev)
 {
     struct fb_info *info;
-    struct xxx_par *par;
+    struct iphonefb_par *par;
     struct device *device = &pdev->dev; /* or &pdev->dev */
    
     /*
      * Dynamically allocate info and par
      */
-    info = framebuffer_alloc(sizeof(struct xxx_par), device);
-    framebuffer_virtual_memory = framebuffer_alloc(iphonefb_var.xres * iphonefb_var.yres * 4, device);
+    info = framebuffer_alloc(sizeof(struct iphonefb_par), device);
+    framebuffer_virtual_memory = rvmalloc(iphonefb_var.xres * iphonefb_var.yres * 4);
     iphone_set_fb_address(DEFAULT_WINDOW_NUM, framebuffer_virtual_memory);
 
     if (!info) {
@@ -309,7 +361,7 @@ static int __init iphonefb_probe(struct platform_device *pdev)
 
     /* This has to been done !!! */	
     fb_alloc_cmap(&info->cmap, 256, 0);
-	
+    info->pseudo_palette = ((struct iphonefb_par*) info->par)->palette;
     /* 
      * The following is done in the case of having hardware with a static 
      * mode. If we are setting the mode ourselves we don't call this. 
@@ -401,7 +453,12 @@ int __init iphonefb_init(void)
 
 static void __exit iphonefb_exit(void)
 {
+	rvfree(framebuffer_virtual_memory, iphonefb_var.xres * iphonefb_var.yres * 4);
 	platform_device_unregister(iphonefb_device);
 	platform_driver_unregister(&iphonefb_driver);
 }
 
+module_init(iphonefb_init);
+module_exit(iphonefb_exit);
+
+MODULE_LICENSE("GPL")

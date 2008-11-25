@@ -673,9 +673,6 @@ static int __init customize_machine(void)
 }
 arch_initcall(customize_machine);
 
-extern void* printascii(const char*);
-extern void* printhex8(uint32_t x);
-
 void __init setup_arch(char **cmdline_p)
 {
 	struct tag *tags = (struct tag *)&init_tags;

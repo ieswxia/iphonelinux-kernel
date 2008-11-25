@@ -95,7 +95,6 @@ void __init iphone_map_io(void)
 void __init iphone_init(void)
 {
 	printk("iphone: platform init\r\n");
-	iphonefb_init();
 }
 
 MACHINE_START(APPLE_IPHONE, "Apple iPhone")
