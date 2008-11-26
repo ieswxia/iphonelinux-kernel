@@ -463,6 +463,32 @@ static void iphone_uart_stop_rx(struct uart_port *port)
  */
 static void iphone_uart_start_tx(struct uart_port *port)
 {
+	int xmit_count, tail, head, loops, ii;
+	char *start;
+	struct circ_buf *xmit;
+
+	xmit = &port->info->xmit;
+	if (uart_circ_empty(xmit) || uart_tx_stopped(port)) {
+		return;
+	}
+
+	head = xmit->head;
+	tail = xmit->tail;
+	start = &xmit->buf[tail];
+	loops = (head < tail) ? 2 : 1;
+
+	for (ii = 0; ii < loops; ii++) {
+		xmit_count = (head < tail) ?
+		    (UART_XMIT_SIZE - tail) : (head - tail);
+		
+		iphone_uart_write(0, start, xmit_count);
+	}
+
+	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
+		uart_write_wakeup(port);
+
+	if (uart_circ_empty(xmit))
+		iphone_uart_stop_tx(port);	/* no-op for us */
 }
 
 /**
