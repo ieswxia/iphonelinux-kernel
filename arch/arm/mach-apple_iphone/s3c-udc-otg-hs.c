@@ -32,19 +32,19 @@
 #define USB_PHYCLOCKGATE 0x23
 #define POWER_USB 0x200
 
-#undef DEBUG_S3C_UDC_SETUP
-#undef DEBUG_S3C_UDC_EP0
-#undef DEBUG_S3C_UDC_ISR
-#undef DEBUG_S3C_UDC_EP1
-#undef DEBUG_S3C_UDC_EP2
-#undef DEBUG_S3C_UDC
+//#undef DEBUG_S3C_UDC_SETUP
+//#undef DEBUG_S3C_UDC_EP0
+//#undef DEBUG_S3C_UDC_ISR
+//#undef DEBUG_S3C_UDC_EP1
+//#undef DEBUG_S3C_UDC_EP2
+//#undef DEBUG_S3C_UDC
 
-//#define DEBUG_S3C_UDC_SETUP
-//#define DEBUG_S3C_UDC_EP0
-//#define DEBUG_S3C_UDC_ISR
-//#define DEBUG_S3C_UDC_EP1
-//#define DEBUG_S3C_UDC_EP2
-//#define DEBUG_S3C_UDC
+#define DEBUG_S3C_UDC_SETUP
+#define DEBUG_S3C_UDC_EP0
+#define DEBUG_S3C_UDC_ISR
+#define DEBUG_S3C_UDC_EP1
+#define DEBUG_S3C_UDC_EP2
+#define DEBUG_S3C_UDC
 
 
 // USB Device DMA support
@@ -106,6 +106,7 @@ static char *state_names[] = {
 #define DRIVER_DESC             "Samsung Dual-speed USB 2.0 OTG Device Controller"
 #define DRIVER_VERSION          __DATE__
 
+static struct platform_device *s3c_udc_device;
 struct s3c_udc  *the_controller;
 
 static const char driver_name[] = "s3c-udc";
@@ -295,6 +296,9 @@ static void udc_disable(struct s3c_udc *dev)
         dev->gadget.speed = USB_SPEED_UNKNOWN;
         dev->usb_address = 0;
         __raw_writel(__raw_readl(S3C_USBOTG_PHYPWR)|(0x7<<1), S3C_USBOTG_PHYPWR);
+        __raw_writel(0, S3C_UDC_OTG_GINTMSK);
+        __raw_writel(0, S3C_UDC_OTG_DIEPMSK);
+        __raw_writel(0, S3C_UDC_OTG_DOEPMSK);
 }
 
 /*
@@ -372,12 +376,19 @@ int usb_gadget_register_driver(struct usb_gadget_driver *driver)
         if (!driver
             || (driver->speed != USB_SPEED_FULL && driver->speed != USB_SPEED_HIGH)
             || !driver->bind
-            || !driver->unbind || !driver->disconnect || !driver->setup)
+            || !driver->disconnect || !driver->setup) {
+		printk("iphone-usb: improperly setup: driver->speed = %x, driver->bind = %x, driver->disconnect = %x, driver->setup = %x\n",
+				driver->speed, driver->bind, driver->disconnect, driver->setup);
                 return -EINVAL;
-        if (!dev)
+	}
+        if (!dev) {
+		printk("iphone-usb: no device\n");
                 return -ENODEV;
-        if (dev->driver)
+	}
+        if (dev->driver) {
+		printk("%s: %s already registered!\n", dev->gadget.name, dev->driver->driver.name);
                 return -EBUSY;
+	}
 
         /* first hook up the driver ... */
         dev->driver = driver;
@@ -428,7 +439,9 @@ int usb_gadget_unregister_driver(struct usb_gadget_driver *driver)
         stop_activity(dev, driver);
         spin_unlock_irqrestore(&dev->lock, flags);
 
-        driver->unbind(&dev->gadget);
+	if(driver->unbind)
+		driver->unbind(&dev->gadget);
+
         device_del(&dev->gadget.dev);
 
         disable_irq(IRQ_OTG);
@@ -866,7 +879,7 @@ static irqreturn_t s3c_udc_irq(int irq, void *_dev)
         
         DEBUG_ISR("GINTSTS=0x%x(on state %s), GINTMSK : 0x%x\n",
                         intr_status, state_names[dev->ep0state], gintmsk);
-        
+
         if (!intr_status) {
                 spin_unlock(&dev->lock);
                 return IRQ_HANDLED;
@@ -1904,16 +1917,20 @@ static int s3c_udc_probe(struct platform_device *pdev)
 	iphone_power_ctrl(POWER_USB, 1);
 	iphone_clock_gate_switch(USB_OTGCLOCKGATE, 1);
 	iphone_clock_gate_switch(USB_PHYCLOCKGATE, 1);
-        
+
+	udc_disable(dev);	
         udc_reinit(dev);
 
-        local_irq_disable();
+	printk("after reinit\n");
+        //local_irq_disable();
+	printk("after local_irq_disable\n");
 
         /* irq setup after old hardware state is cleaned up */
         retval =
             request_irq(IRQ_OTG, s3c_udc_irq, IRQF_DISABLED, driver_name,
                         dev);
         
+	printk("after request_irq\n");
         if (retval != 0) {
                 DEBUG(KERN_ERR "%s: can't get irq %i, err %d\n", driver_name,
                       IRQ_OTG, retval);
@@ -1921,9 +1938,12 @@ static int s3c_udc_probe(struct platform_device *pdev)
         }
 
         disable_irq(IRQ_OTG);
-        local_irq_enable();
+	printk("after disable_irq\n");
+        //local_irq_enable();
+	printk("after local_irq_enable\n");
         create_proc_files();
 
+	printk("probe done\n");
         return retval;
 }
 
@@ -1979,19 +1999,35 @@ static struct platform_driver s3c_udc_driver = {
 
 static int __init udc_init(void)
 {
-        int ret;
+	int ret;
 
-        ret = platform_driver_register(&s3c_udc_driver);
-        if(!ret)
-           printk("Loaded %s version %s\n", driver_name, DRIVER_VERSION);
+	ret = platform_driver_register(&s3c_udc_driver);
+	if(!ret) {
+		s3c_udc_device = platform_device_register_simple("s3c2410-usbgadget", 0,
+				NULL, 0);
 
-        return ret;
+		if (IS_ERR(s3c_udc_device)) {
+			platform_driver_unregister(&s3c_udc_driver);
+			ret = PTR_ERR(s3c_udc_device);
+			printk("%s: Error loading version %s\n", driver_name, DRIVER_VERSION);
+		} else {
+			printk("%s: loaded version %s\n", driver_name, DRIVER_VERSION);
+		}
+	}
+
+	return ret;
 }
 
 static void __exit udc_exit(void)
 {
+        platform_device_unregister(s3c_udc_device);
         platform_driver_unregister(&s3c_udc_driver);
         printk("Unloaded %s version %s\n", driver_name, DRIVER_VERSION);
 }
 
-device_initcall(udc_init);
+module_init(udc_init);
+module_exit(udc_exit);
+
+MODULE_AUTHOR("Samsung");
+MODULE_LICENSE("GPL");
+
