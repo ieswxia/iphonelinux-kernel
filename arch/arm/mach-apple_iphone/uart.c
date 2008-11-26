@@ -482,6 +482,11 @@ static void iphone_uart_start_tx(struct uart_port *port)
 		    (UART_XMIT_SIZE - tail) : (head - tail);
 		
 		iphone_uart_write(0, start, xmit_count);
+		port->icount.tx += xmit_count;
+		tail += xmit_count;
+		tail &= UART_XMIT_SIZE - 1;
+		xmit->tail = tail;
+		start = &xmit->buf[tail];
 	}
 
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
