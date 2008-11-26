@@ -371,13 +371,179 @@ static void iphone_console_write(struct console *co, const char *s, unsigned int
 	iphone_uart_write(0, s, count);
 }
 
+/**
+ * iphone_uart_type - What type of console are we?
+ * @port: Port to operate with (we ignore since we only have one port)
+ *
+ */
+static const char *iphone_uart_type(struct uart_port *port)
+{
+	return ("iPhone Serial");
+}
+
+/**
+ * iphone_uart_tx_empty - Is the transmitter empty?  We pretend we're always empty
+ * @port: Port to operate on (we ignore since we only have one port)
+ *
+ */
+static unsigned int iphone_uart_tx_empty(struct uart_port *port)
+{
+	return 1;
+}
+
+/**
+ * iphone_uart_stop_tx - stop the transmitter - no-op for us
+ * @port: Port to operat eon - we ignore - no-op function
+ *
+ */
+static void iphone_uart_stop_tx(struct uart_port *port)
+{
+}
+
+/**
+ * iphone_uart_release_port - Free i/o and resources for port - no-op for us
+ * @port: Port to operate on - we ignore - no-op function
+ *
+ */
+static void iphone_uart_release_port(struct uart_port *port)
+{
+}
+
+/**
+ * iphone_uart_enable_ms - Force modem status interrupts on - no-op for us
+ * @port: Port to operate on - we ignore - no-op function
+ *
+ */
+static void iphone_uart_enable_ms(struct uart_port *port)
+{
+}
+
+/**
+ * iphone_uart_shutdown - shut down the port - free irq and disable - no-op for us
+ * @port: Port to shut down - we ignore
+ *
+ */
+static void iphone_uart_shutdown(struct uart_port *port)
+{
+}
+
+/**
+ * iphone_uart_set_mctrl - set control lines (dtr, rts, etc) - no-op for our console
+ * @port: Port to operate on - we ignore
+ * @mctrl: Lines to set/unset - we ignore
+ *
+ */
+static void iphone_uart_set_mctrl(struct uart_port *port, unsigned int mctrl)
+{
+}
+
+/**
+ * iphone_uart_get_mctrl - get control line info, we just return a static value
+ * @port: port to operate on - we only have one port so we ignore this
+ *
+ */
+static unsigned int iphone_uart_get_mctrl(struct uart_port *port)
+{
+	return TIOCM_CAR | TIOCM_RNG | TIOCM_DSR | TIOCM_CTS;
+}
+
+/**
+ * iphone_uart_stop_rx - Stop the receiver - we ignor ethis
+ * @port: Port to operate on - we ignore
+ *
+ */
+static void iphone_uart_stop_rx(struct uart_port *port)
+{
+}
+
+/**
+ * iphone_uart_start_tx - Start transmitter
+ * @port: Port to operate on
+ *
+ */
+static void iphone_uart_start_tx(struct uart_port *port)
+{
+}
+
+/**
+ * iphone_uart_break_ctl - handle breaks - ignored by us
+ * @port: Port to operate on
+ * @break_state: Break state
+ *
+ */
+static void iphone_uart_break_ctl(struct uart_port *port, int break_state)
+{
+}
+
+/**
+ * iphone_uart_startup - Start up the serial port - always return 0 (We're always on)
+ * @port: Port to operate on
+ *
+ */
+static int iphone_uart_startup(struct uart_port *port)
+{
+	return 0;
+}
+
+/**
+ * iphone_uart_set_termios - set termios stuff - we ignore these
+ * @port: port to operate on
+ * @termios: New settings
+ * @termios: Old
+ *
+ */
+static void
+iphone_uart_set_termios(struct uart_port *port, struct ktermios *termios,
+		struct ktermios *old)
+{
+}
+
+/**
+ * iphone_uart_request_port - allocate resources for port - ignored by us
+ * @port: port to operate on
+ *
+ */
+static int iphone_uart_request_port(struct uart_port *port)
+{
+	return 0;
+}
+
+/**
+ * iphone_uart_config_port - allocate resources, set up - we ignore,  we're always on
+ * @port: Port to operate on
+ * @flags: flags used for port setup
+ *
+ */
+static void iphone_uart_config_port(struct uart_port *port, int flags)
+{
+}
+
+static struct uart_ops iphone_uart_ops = {
+	.tx_empty     = iphone_uart_tx_empty,
+	.set_mctrl    = iphone_uart_set_mctrl,
+	.get_mctrl    = iphone_uart_get_mctrl,
+	.stop_tx      = iphone_uart_stop_tx,
+	.start_tx     = iphone_uart_start_tx,
+	.stop_rx      = iphone_uart_stop_rx,
+	.enable_ms    = iphone_uart_enable_ms,
+	.break_ctl    = iphone_uart_break_ctl,
+	.startup      = iphone_uart_startup,
+	.shutdown     = iphone_uart_shutdown,
+	.type         = iphone_uart_type,
+	.release_port = iphone_uart_release_port,
+	.request_port = iphone_uart_request_port,
+	.config_port  = iphone_uart_config_port,
+	.verify_port  = NULL,
+	.set_termios  = iphone_uart_set_termios,
+};
+
 struct uart_driver iphone_reg = {
 	.owner        = THIS_MODULE,
 	.driver_name  = "iphone_serial",
 	.dev_name     = "ttyS",
 	.major        = TTY_MAJOR,
 	.minor        = 64,
-	.nr           = 5,
+	.nr           = 1,
 };
 
 static struct console iphone_console = {
@@ -389,6 +555,8 @@ static struct console iphone_console = {
 	.index    = -1,
 };
 
+static struct uart_port iphone_uart_port;
+
 static int iphone_console_initconsole(void)
 {
 	iphone_uart_setup();
@@ -399,6 +567,17 @@ static int iphone_console_initconsole(void)
 
 static int __init iphone_console_moduleinit(void) {
 	uart_register_driver(&iphone_reg);
+
+	spin_lock_init(&iphone_uart_port.lock);
+
+	/* Setup the port struct with the minimum needed */
+	iphone_uart_port.membase = (char *)1;	/* just needs to be non-zero */
+	iphone_uart_port.type = PORT_16550A;
+	iphone_uart_port.fifosize = 10;
+	iphone_uart_port.ops = &iphone_uart_ops;
+	iphone_uart_port.line = 0;
+
+	uart_add_one_port(&iphone_reg, &iphone_uart_port);
 	return 0;
 }
 
