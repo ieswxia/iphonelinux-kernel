@@ -94,7 +94,7 @@ static USBStartHandler startHandler;
 
 static void change_state(USBState new_state)
 {
-	printk("USB state change: %d -> %d\r\n", usb_state, new_state);
+	printk("iphoneusb: USB state change: %d -> %d\r\n", usb_state, new_state);
 	usb_state = new_state;
 	if(usb_state == USBConfigured) {
 		// TODO: set to host powered
@@ -1108,6 +1108,13 @@ static void iphone_usb_serial_read(char* start, int bufferLen) {
 
 }
 
+static int MyBufferLen = 0;
+static spinlock_t MyBufferLock;
+static char* MyBuffer;
+static char* pMyBuffer = NULL;
+
+#define SCROLLBACK_LEN (1024*16)
+
 static int getScrollbackLen(void)
 {
 	return 0;
@@ -1115,7 +1122,38 @@ static int getScrollbackLen(void)
 
 static void bufferFlush(char* buffer, int len)
 {
+	unsigned long flags;
+	if(len == 0)
+		return;
+	spin_lock_irqsave(&MyBufferLock, flags);
+	memcpy(buffer, MyBuffer, len);
+	memmove(MyBuffer, MyBuffer + len, MyBufferLen - len);
+	MyBufferLen -= len;
+	pMyBuffer -= len;
+	spin_unlock_irqrestore(&MyBufferLock, flags);
+}
 
+static void bufferPrint(const char* buffer, int len)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&MyBufferLock, flags);
+	if((MyBufferLen + len) > SCROLLBACK_LEN) {
+		spin_unlock_irqrestore(&MyBufferLock, flags);
+		return;
+	}
+
+	MyBufferLen += len;
+	memcpy(pMyBuffer, buffer, len);
+	pMyBuffer += len;
+
+	spin_unlock_irqrestore(&MyBufferLock, flags);
+}
+
+static void bufferSetup(void) {
+	MyBuffer = (char*) kmalloc(SCROLLBACK_LEN, GFP_KERNEL);
+	MyBufferLen = 0;
+	pMyBuffer = MyBuffer;
+	spin_lock_init(&MyBufferLock);
 }
 
 /**
@@ -1468,7 +1506,35 @@ static struct platform_driver iphone_usb_driver = {
         },
 };
 
+struct uart_driver iphone_usb_uart_driver = {
+	.owner        = THIS_MODULE,
+	.driver_name  = "iphone_usb_serial",
+	.dev_name     = "ttyUSB",
+	.major        = TTY_MAJOR,
+	.minor        = 128,
+	.nr           = 1,
+};
+
+static void iphone_usb_console_write(struct console *co, const char *s, unsigned int count) {
+	bufferPrint(s, count);
+}
+
+static int __init iphone_usb_console_setup(struct console *co, char *options) {
+	return 0;
+}
+
+static struct console iphone_usb_console = {
+	.name     = "ttyUSB",
+	.write    = iphone_usb_console_write,
+	.device   = uart_console_device,
+	.setup    = iphone_usb_console_setup,
+	.flags    = CON_PRINTBUFFER,
+	.index    = -1,
+};
+
 static struct platform_device *iphone_usb_device;
+
+static struct uart_port iphone_usb_uart_port;
 
 static int __init iphone_usb_init(void)
 {
@@ -1484,6 +1550,18 @@ static int __init iphone_usb_init(void)
 			ret = PTR_ERR(iphone_usb_device);
 			printk("%s: Error loading version %s\n", driver_name, DRIVER_VERSION);
 		} else {
+			bufferSetup();
+
+			uart_register_driver(&iphone_usb_uart_driver);
+			spin_lock_init(&iphone_usb_uart_port.lock);
+			iphone_usb_uart_port.membase = (char *)1;	/* just needs to be non-zero */
+			iphone_usb_uart_port.type = PORT_16550A;
+			iphone_usb_uart_port.fifosize = 1024;
+			iphone_usb_uart_port.ops = &iphone_usb_serial_ops;
+			iphone_usb_uart_port.line = 0;
+
+			uart_add_one_port(&iphone_usb_uart_driver, &iphone_usb_uart_port);
+			register_console(&iphone_usb_console);
 			printk("%s: loaded version %s\n", driver_name, DRIVER_VERSION);
 		}
 	}
@@ -1493,6 +1571,7 @@ static int __init iphone_usb_init(void)
 
 static void __exit iphone_usb_exit(void)
 {
+	uart_unregister_driver(&iphone_usb_uart_driver);
         platform_device_unregister(iphone_usb_device);
         platform_driver_unregister(&iphone_usb_driver);
         printk("Unloaded %s version %s\n", driver_name, DRIVER_VERSION);
