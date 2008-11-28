@@ -1527,7 +1527,16 @@ struct uart_driver iphone_usb_uart_driver = {
 
 static void iphone_usb_console_write(struct console *co, const char *s, unsigned int count)
 {
-	bufferPrint(s, count);
+	int i;
+	char ch;
+	char cr = '\r';
+	for(i = 0; i < count; i++) {
+		ch = s[i];
+		if(ch == '\n')
+			bufferPrint(&cr, 1);
+
+		bufferPrint(&ch, 1);
+	}
 }
 
 static int __init iphone_usb_console_setup(struct console *co, char *options) {
