@@ -1,8 +1,7 @@
 /*
- *  arch/arm/mach-versatile/include/mach/system.h
+ *  arch/arm/mach-apple_iphone/include/mach/system.h
  *
- *  Copyright (C) 2003 ARM Limited
- *  Copyright (C) 2000 Deep Blue Solutions Ltd
+ *  Copyright (C) 2008 Yiduo Wang
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -36,14 +35,7 @@ static inline void arch_idle(void)
 
 static inline void arch_reset(char mode)
 {
-	u32 val;
-
-	val = __raw_readl(IO_ADDRESS(VERSATILE_SYS_RESETCTL)) & ~0x7;
-	val |= 0x105;
-
-	__raw_writel(0xa05f, IO_ADDRESS(VERSATILE_SYS_LOCK));
-	__raw_writel(val, IO_ADDRESS(VERSATILE_SYS_RESETCTL));
-	__raw_writel(0, IO_ADDRESS(VERSATILE_SYS_LOCK));
+	__raw_writel(0x100000, IO_ADDRESS(0x3E300000));
 }
 
 #endif
