@@ -1100,14 +1100,6 @@ static int usb_install_ep_handler(int endpoint, USBDirection direction, USBEndpo
 	return 0;
 }
 
-static void iphone_usb_serial_write(char* start, int bufferLen) {
-
-}
-
-static void iphone_usb_serial_read(char* start, int bufferLen) {
-
-}
-
 static int MyBufferLen = 0;
 static spinlock_t MyBufferLock;
 static char* MyBuffer;
@@ -1117,7 +1109,7 @@ static char* pMyBuffer = NULL;
 
 static int getScrollbackLen(void)
 {
-	return 0;
+	return MyBufferLen;
 }
 
 static void bufferFlush(char* buffer, int len)
@@ -1156,6 +1148,23 @@ static void bufferSetup(void) {
 	spin_lock_init(&MyBufferLock);
 }
 
+static struct uart_port iphone_usb_uart_port;
+
+static void iphone_usb_serial_write(char* start, int bufferLen) {
+	bufferPrint(start, bufferLen);
+}
+
+static void iphone_usb_serial_read(char* start, int bufferLen) {
+	struct tty_struct* tty;
+
+	tty = iphone_usb_uart_port.info->port.tty;
+	if(tty) {
+		tty_insert_flip_string(tty, start, bufferLen);
+		iphone_usb_uart_port.icount.rx += bufferLen;
+		tty_flip_buffer_push(tty);
+	}
+}
+
 /**
  * iphone_usb_serial_type - What type of console are we?
  * @port: Port to operate with (we ignore since we only have one port)
@@ -1163,7 +1172,7 @@ static void bufferSetup(void) {
  */
 static const char *iphone_usb_serial_type(struct uart_port *port)
 {
-	return ("iPhone Serial");
+	return ("iPhone USB Serial");
 }
 
 /**
@@ -1470,6 +1479,7 @@ static void serialEnumerateHandler(USBInterface* interface) {
 }
 
 static void serialStartHandler(void) {
+	printk("iphoneusb: got serial USB start\n");
 	usb_receive_interrupt(4, controlRecvBuffer, sizeof(OpenIBootCmd));
 }
 
@@ -1515,7 +1525,8 @@ struct uart_driver iphone_usb_uart_driver = {
 	.nr           = 1,
 };
 
-static void iphone_usb_console_write(struct console *co, const char *s, unsigned int count) {
+static void iphone_usb_console_write(struct console *co, const char *s, unsigned int count)
+{
 	bufferPrint(s, count);
 }
 
@@ -1533,8 +1544,6 @@ static struct console iphone_usb_console = {
 };
 
 static struct platform_device *iphone_usb_device;
-
-static struct uart_port iphone_usb_uart_port;
 
 static int __init iphone_usb_init(void)
 {
@@ -1561,6 +1570,8 @@ static int __init iphone_usb_init(void)
 			iphone_usb_uart_port.line = 0;
 
 			uart_add_one_port(&iphone_usb_uart_driver, &iphone_usb_uart_port);
+
+			iphone_usb_console.data = &iphone_usb_uart_driver;
 			register_console(&iphone_usb_console);
 			printk("%s: loaded version %s\n", driver_name, DRIVER_VERSION);
 		}

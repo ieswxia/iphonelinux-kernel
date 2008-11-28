@@ -5,8 +5,8 @@
 #define VENDOR_APPLE 0x5AC
 
 // assigned by Apple
-#define PRODUCT_IPHONE 0x1000
-#define DEVICE_IPHONE 0x1000
+#define PRODUCT_IPHONE 0x1280
+#define DEVICE_IPHONE 0x1103
 
 // values we're using
 #define USB_MAX_PACKETSIZE 64
