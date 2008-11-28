@@ -36,8 +36,6 @@
 extern void __init iphone_init(void);
 extern void __init iphone_init_irq(void);
 extern void __init iphone_map_io(void);
-extern struct sys_timer versatile_timer;
-extern unsigned int mmc_status(struct device *dev);
 
 extern struct sys_timer iphone_timer;
 #endif
