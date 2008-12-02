@@ -122,6 +122,13 @@ choice
 # Integrated controllers
 #
 
+config USB_GADGET_IPHONE
+	boolean "Apple iPhone USB Device Port"
+	depends on MACH_APPLE_IPHONE
+	select USB_GADGET_SELECTED
+	help
+	  iPhone's USB controller.
+
 config USB_GADGET_AT91
 	boolean "Atmel AT91 USB Device Port"
 	depends on ARCH_AT91 && !ARCH_AT91SAM9RL && !ARCH_AT91CAP9

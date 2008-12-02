@@ -62,6 +62,702 @@
 
 #define DRIVER_VERSION          __DATE__
 
+#define driver_name "iphoneudc"
+
+static USBEPRegisters* InEPRegs;
+static USBEPRegisters* OutEPRegs;
+static u32 inInterruptStatus[USB_NUM_ENDPOINTS];
+static u32 outInterruptStatus[USB_NUM_ENDPOINTS];
+static u8* ep0controlSendBuffer = NULL;
+static u8* ep0controlRecvBuffer = NULL;
+
+struct iphone_udc;
+
+struct iphone_udc_request {
+	struct usb_request			req;
+	struct list_head			queue;
+
+};
+
+struct iphone_udc_ep {
+	struct usb_ep				ep;
+	struct list_head			queue;
+	const struct usb_endpoint_descriptor*	desc;
+	struct iphone_udc			*dev;
+	USBTransferType				transferType;
+	unsigned				num:8;
+};
+
+struct iphone_udc {
+	spinlock_t				lock;
+	struct usb_gadget			gadget;
+	struct iphone_udc_ep			ep[6]; 
+
+	USBState				usb_state;
+
+	struct usb_gadget_driver*		driver;
+
+	struct platform_device*			pdev;
+};
+
+struct iphone_udc* the_controller;
+
+static void change_state(USBState new_state)
+{
+	struct iphone_udc *dev = the_controller;
+
+	printk("%s: USB state change: %d -> %d\r\n", driver_name, dev->usb_state, new_state);
+	dev->usb_state = new_state;
+	if(dev->usb_state == USBConfigured) {
+		// TODO: set to host powered
+	}
+}
+
+static u16 packetsizeFromSpeed(int speed_id)
+{
+	switch(speed_id) {
+		case USB_SPEED_HIGH:
+			return 512;
+		case USB_SPEED_FULL:
+			return 64;
+		case USB_SPEED_LOW:
+			return 32;
+		default:
+			return -1;
+	}
+}
+
+static void getEndpointInterruptStatuses(void) {
+	// To not mess up the interrupt controller, we can only read the interrupt status once per interrupt, so we need to cache them here
+	int endpoint;
+	for(endpoint = 0; endpoint < USB_NUM_ENDPOINTS; endpoint++) {
+		inInterruptStatus[endpoint] = InEPRegs[endpoint].interrupt;
+		outInterruptStatus[endpoint] = OutEPRegs[endpoint].interrupt;
+	}
+}
+
+static int isSetupPhaseDone(void) {
+	u32 status = __raw_readl(USB + DAINTMSK);
+	int isDone = 0;
+
+	if((status & ((1 << USB_CONTROLEP) << DAINTMSK_OUT_SHIFT)) == ((1 << USB_CONTROLEP) << DAINTMSK_OUT_SHIFT)) {
+		if((outInterruptStatus[USB_CONTROLEP] & USB_EPINT_SetUp) == USB_EPINT_SetUp) {
+			isDone = 1;
+		}
+	}
+
+	// clear interrupt
+	OutEPRegs[USB_CONTROLEP].interrupt = USB_EPINT_SetUp;
+
+	return isDone;
+}
+
+static int resetUSB(void)
+{
+	int endpoint;
+	__raw_writel(__raw_readl(USB + DCFG) & ~DCFG_DEVICEADDRMSK, USB + DCFG);
+
+	for(endpoint = 0; endpoint < USB_NUM_ENDPOINTS; endpoint++) {
+		OutEPRegs[endpoint].control = OutEPRegs[endpoint].control | USB_EPCON_SETNAK;
+	}
+
+	// enable interrupts for endpoint 0
+	__raw_writel(__raw_readl(USB + DAINTMSK) | ((1 << USB_CONTROLEP) << DAINTMSK_OUT_SHIFT) | ((1 << USB_CONTROLEP) << DAINTMSK_IN_SHIFT), USB + DAINTMSK);
+
+	__raw_writel(USB_EPINT_XferCompl | USB_EPINT_SetUp | USB_EPINT_Back2BackSetup, USB + DOEPMSK);
+	__raw_writel(USB_EPINT_XferCompl | USB_EPINT_AHBErr | USB_EPINT_TimeOUT, USB + DIEPMSK);
+
+	//receiveControl(ep0controlRecvBuffer, sizeof(USBSetupPacket));
+
+	return 0;
+}
+
+static int iphone_udc_ep_enable(struct usb_ep *_ep, const struct usb_endpoint_descriptor *desc)
+{
+	struct iphone_udc *dev;
+	struct iphone_udc_ep *ep;
+
+	ep = container_of(_ep, struct iphone_udc_ep, ep);
+	if (!_ep || !desc || ep->desc
+			|| desc->bDescriptorType != USB_DT_ENDPOINT)
+		return -EINVAL;
+	dev = ep->dev;
+	if (ep == &dev->ep[0])
+		return -EINVAL;
+	if (!dev->driver || dev->gadget.speed == USB_SPEED_UNKNOWN)
+		return -ESHUTDOWN;
+	if (ep->num != (desc->bEndpointAddress & 0x0f))
+		return -EINVAL;
+
+	switch (desc->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK) {
+	case USB_ENDPOINT_XFER_BULK:
+		ep->transferType = USBBulk;
+		break;
+	case USB_ENDPOINT_XFER_INT:
+		ep->transferType = USBInterrupt;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if(ep->transferType == USBControl || ep->transferType == USBInterrupt) {
+		ep->ep.maxpacket = USB_MAX_PACKETSIZE;
+	} else {
+		ep->ep.maxpacket = packetsizeFromSpeed(dev->gadget.speed);
+	}
+
+	ep->desc = desc;
+
+	printk("%s: endpoint enabled: %d\n", driver_name, ep->num);
+	return 0;
+}
+
+static int iphone_udc_ep_disable(struct usb_ep *_ep)
+{
+	struct iphone_udc_ep *ep;
+
+	ep = container_of(_ep, struct iphone_udc_ep, ep);
+	if (!_ep || !ep->desc)
+		return -ENODEV;
+
+	printk("%s: endpoint disabled: %d\n", driver_name, ep->num);
+
+	return 0;
+}
+
+static struct usb_request* iphone_udc_alloc_request(struct usb_ep *_ep, gfp_t gfp_flags)
+{
+	struct iphone_udc_request *req;
+
+	if (!_ep)
+		return NULL;
+	req = kzalloc(sizeof(struct iphone_udc_request), gfp_flags);
+	if (!req)
+		return NULL;
+
+	INIT_LIST_HEAD(&req->queue);
+	return &req->req;
+}
+
+static void iphone_udc_free_request(struct usb_ep *_ep, struct usb_request *_req)
+{
+	struct iphone_udc_request* req;
+
+	if (!_ep || !_req)
+		return;
+
+	req = container_of(_req, struct iphone_udc_request, req);
+	WARN_ON(!list_empty(&req->queue));
+	kfree(req);
+}
+
+static int iphone_udc_queue(struct usb_ep *_ep, struct usb_request *_req, gfp_t gfp_flags)
+{
+	struct iphone_udc_request* req;
+	struct iphone_udc_ep* ep;
+	struct iphone_udc* dev;
+	unsigned long flags;
+
+	req = container_of(_req, struct iphone_udc_request, req);
+
+	ep = container_of(_ep, struct iphone_udc_ep, ep);
+	if (unlikely(!_ep || (!ep->desc && ep->num != 0)))
+		return -EINVAL;
+	dev = ep->dev;
+	if (unlikely(!dev->driver || dev->gadget.speed == USB_SPEED_UNKNOWN))
+		return -ESHUTDOWN;
+
+	spin_lock_irqsave(&dev->lock, flags);
+
+	/* make sure it's actually queued on this endpoint */
+	list_for_each_entry (req, &ep->queue, queue) {
+		if (&req->req == _req)
+			break;
+	}
+	if (&req->req != _req) {
+		spin_unlock_irqrestore (&dev->lock, flags);
+		return -EINVAL;
+	}
+
+	printk("%s\n", __FUNCTION__);
+	return 0;
+}
+
+static int iphone_udc_dequeue(struct usb_ep *_ep, struct usb_request *_req)
+{
+	struct iphone_udc_request* req;
+	struct iphone_udc_ep* ep;
+	struct iphone_udc* dev;
+
+	ep = container_of(_ep, struct iphone_udc_ep, ep);
+	if (!_ep || !_req || (!ep->desc && ep->num != 0))
+		return -EINVAL;
+	dev = ep->dev;
+	if (!dev->driver)
+		return -ESHUTDOWN;
+
+	printk("%s\n", __FUNCTION__);
+	return 0;
+}
+
+static int iphone_udc_set_halt(struct usb_ep *_ep, int value)
+{
+	printk("%s: attempted halt!\n", driver_name);
+	return 0;
+}
+	
+static struct usb_ep_ops iphone_udc_ep_ops = {
+	.enable		= iphone_udc_ep_enable,
+	.disable	= iphone_udc_ep_disable,
+
+	.alloc_request	= iphone_udc_alloc_request,
+	.free_request	= iphone_udc_free_request,
+
+	.queue		= iphone_udc_queue,
+	.dequeue	= iphone_udc_dequeue,
+
+	.set_halt	= iphone_udc_set_halt,
+};
+
+static void udc_reinit(struct iphone_udc *dev)
+{
+	static char *names[] = { "ep0", "ep1-bulk", "ep2-bulk", "ep3-bulk", "ep4-bulk", "ep5-bulk" };
+
+	unsigned i;
+
+	INIT_LIST_HEAD (&dev->gadget.ep_list);
+	dev->gadget.ep0 = &dev->ep[0].ep;
+	dev->gadget.speed = USB_SPEED_UNKNOWN;
+
+	for (i = 0; i < USB_NUM_ENDPOINTS; i++) {
+		struct iphone_udc_ep* ep = &dev->ep[i];
+
+		ep->num = i;
+		ep->ep.name = names[i];
+
+		ep->ep.ops = &iphone_udc_ep_ops;
+		list_add_tail (&ep->ep.ep_list, &dev->gadget.ep_list);
+		ep->dev = dev;
+		INIT_LIST_HEAD (&ep->queue);
+
+		InEPRegs[i].interrupt = USB_EPINT_INEPNakEff | USB_EPINT_INTknEPMis | USB_EPINT_INTknTXFEmp
+			| USB_EPINT_TimeOUT | USB_EPINT_AHBErr | USB_EPINT_EPDisbld | USB_EPINT_XferCompl;
+		OutEPRegs[i].interrupt = USB_EPINT_OUTTknEPDis
+			| USB_EPINT_SetUp | USB_EPINT_AHBErr | USB_EPINT_EPDisbld | USB_EPINT_XferCompl;
+	
+		ep->ep.maxpacket = 512;
+	}
+
+	dev->ep[0].ep.maxpacket = USB_MAX_PACKETSIZE;
+	list_del_init (&dev->ep[0].ep.ep_list);
+}
+
+static int iphone_udc_start(void) {
+	int i;
+
+	if(ep0controlSendBuffer == NULL)
+		ep0controlSendBuffer = kmalloc(CONTROL_SEND_BUFFER_LEN, GFP_KERNEL | GFP_DMA);
+
+	if(ep0controlRecvBuffer == NULL)
+		ep0controlRecvBuffer = kmalloc(CONTROL_RECV_BUFFER_LEN, GFP_KERNEL | GFP_DMA);
+
+	__raw_writel(GAHBCFG_DMAEN | GAHBCFG_BSTLEN_INCR8 | GAHBCFG_MASKINT, USB + GAHBCFG);
+	__raw_writel(GUSBCFG_PHYIF16BIT | GUSBCFG_SRPENABLE | GUSBCFG_HNPENABLE | ((5 & GUSBCFG_TURNAROUND_MASK) << GUSBCFG_TURNAROUND_SHIFT), USB + GUSBCFG);
+	__raw_writel(DCFG_NZSTSOUTHSHK, USB + DCFG); // some random setting. See specs
+	__raw_writel(__raw_readl(USB + DCFG) & ~(DCFG_DEVICEADDRMSK), USB + DCFG);
+	InEPRegs[0].control = USB_EPCON_ACTIVE;
+	OutEPRegs[0].control = USB_EPCON_ACTIVE;
+
+	__raw_writel(RX_FIFO_DEPTH, USB + GRXFSIZ);
+	__raw_writel((TX_FIFO_DEPTH << GNPTXFSIZ_DEPTH_SHIFT) | TX_FIFO_STARTADDR, USB + GNPTXFSIZ);
+
+	for(i = 0; i < USB_NUM_ENDPOINTS; i++) {
+		InEPRegs[i].interrupt = USB_EPINT_INEPNakEff | USB_EPINT_INTknEPMis | USB_EPINT_INTknTXFEmp
+			| USB_EPINT_TimeOUT | USB_EPINT_AHBErr | USB_EPINT_EPDisbld | USB_EPINT_XferCompl;
+		OutEPRegs[i].interrupt = USB_EPINT_OUTTknEPDis
+			| USB_EPINT_SetUp | USB_EPINT_AHBErr | USB_EPINT_EPDisbld | USB_EPINT_XferCompl;
+		
+	}
+
+	__raw_writel(GINTMSK_OTG | GINTMSK_SUSPEND | GINTMSK_RESET | GINTMSK_INEP | GINTMSK_OEP | GINTMSK_DISCONNECT, USB + GINTMSK);
+	__raw_writel(DAINTMSK_ALL, USB + DAINTMSK);
+
+	__raw_writel(USB_EPINT_XferCompl | USB_EPINT_SetUp | USB_EPINT_Back2BackSetup, USB + DOEPMSK);
+	__raw_writel(USB_EPINT_XferCompl | USB_EPINT_AHBErr | USB_EPINT_TimeOUT, USB + DIEPMSK);
+
+	InEPRegs[0].interrupt = USB_EPINT_ALL;
+	OutEPRegs[0].interrupt = USB_EPINT_ALL;
+
+	__raw_writel(DCTL_PROGRAMDONE + DCTL_CGOUTNAK + DCTL_CGNPINNAK, USB + DCTL);
+	udelay(USB_PROGRAMDONE_DELAYUS);
+	__raw_writel(__raw_readl(USB + GOTGCTL) | GOTGCTL_SESSIONREQUEST, USB + GOTGCTL);
+
+	//receiveControl(ep0controlRecvBuffer, sizeof(USBSetupPacket));
+
+	change_state(USBPowered);
+
+	enable_irq(USB_INTERRUPT);
+
+	return 0;
+}
+
+int usb_gadget_register_driver(struct usb_gadget_driver *driver)
+{
+	struct iphone_udc *dev = the_controller;
+	int retval = 0;
+
+	if (!driver
+			|| (driver->speed != USB_SPEED_FULL && driver->speed != USB_SPEED_HIGH)
+			|| !driver->bind
+			|| !driver->disconnect
+			|| !driver->setup)
+	{
+		printk("%s: invalid gadget driver!\n", driver_name);
+		return -EINVAL;
+	}
+
+	if (!dev)
+	{
+		printk("%s: no controller device yet!\n", driver_name);
+		return -ENODEV;
+	}
+
+	if (dev->driver)
+	{
+		printk("%s: gadget driver already registered!\n", driver_name);
+		return -EBUSY;
+	}
+
+	dev->driver = driver;
+	dev->gadget.dev.driver = &driver->driver;
+
+	udc_reinit(dev);
+	if ((retval = device_add(&dev->gadget.dev)) != 0) {
+		printk(KERN_ERR "Error in device_add() : %d\n",retval);
+		return retval;
+	}
+
+	retval = driver->bind(&dev->gadget);
+	if (retval) {
+		printk("%s: unable to bind to driver, error %d\n", driver_name, retval);
+		dev->driver = NULL;
+		dev->gadget.dev.driver = NULL;
+		return retval;
+	}
+
+	retval = iphone_udc_start();
+
+	printk("%s: gadget driver registered\n", driver_name);
+
+	return retval;
+}
+EXPORT_SYMBOL(usb_gadget_register_driver);
+
+static irqreturn_t usbIRQHandler(int irq, void* _dev)
+{
+	int retval;
+	u32 status;
+	struct iphone_udc *dev = _dev;
+	int process = 0;
+	int usb_speed;
+        spin_lock(&dev->lock);
+	status = __raw_readl(USB + GINTSTS) & __raw_readl(USB + GINTMSK);
+
+	printk("%s: interrupt!\n", driver_name);
+
+	if(status) {
+		process = 1;
+	}
+
+	while(process) {
+		if((status & GINTMSK_OTG) == GINTMSK_OTG) {
+			// acknowledge OTG interrupt (these bits are all R_SS_WC which means Write Clear, a write of 1 clears the bits)
+			__raw_writel(__raw_readl(USB + GOTGINT), USB + GOTGINT);
+
+			// acknowledge interrupt (this bit is actually RO, but should've been cleared when we cleared GOTGINT. Still, iBoot pokes it as if it was WC, so we will too)
+			__raw_writel(GINTMSK_OTG, USB + GINTSTS);
+
+			process = 1;
+		} else {
+			// we only care about OTG
+			process = 0;
+		}
+
+		if((status & GINTMSK_RESET) == GINTMSK_RESET) {
+			if(dev->usb_state < USBError) {
+				printk("%s: reset detected\r\n", driver_name);
+				change_state(USBPowered);
+			}
+
+			retval = resetUSB();
+
+			__raw_writel(GINTMSK_RESET, USB + GINTSTS);
+
+			if(retval) {
+				printk("iphoneusb: listening for further usb events\r\n");
+				spin_unlock(&dev->lock);
+				return IRQ_HANDLED;	
+			}
+
+			process = 1;
+		}
+
+		if(((status & GINTMSK_INEP) == GINTMSK_INEP) || ((status & GINTMSK_OEP) == GINTMSK_OEP)) {
+			// aha, got something on one of the endpoints. Now the real fun begins
+
+			// first, let's get the interrupt status of individual endpoints
+			getEndpointInterruptStatuses();
+
+			if(isSetupPhaseDone()) {
+				// recall our earlier receiveControl calls. We now should have 8 bytes of goodness in controlRecvBuffer.
+				struct usb_ctrlrequest* setupPacket = (struct usb_ctrlrequest*) ep0controlRecvBuffer;
+
+				if(setupPacket->bRequest == USB_SET_ADDRESS)
+				{
+					usb_speed = DSTS_GET_SPEED(__raw_readl(USB + DSTS));
+					switch(usb_speed) {
+						case USB_HIGHSPEED:
+							dev->gadget.speed = USB_SPEED_HIGH;
+							break;
+						case USB_FULLSPEED:
+						case USB_FULLSPEED_48_MHZ:
+							dev->gadget.speed = USB_SPEED_FULL;
+							break;
+						case USB_LOWSPEED:
+							dev->gadget.speed = USB_SPEED_LOW;
+							break;
+					}
+
+					__raw_writel((__raw_readl(USB + DCFG) & ~DCFG_DEVICEADDRMSK)
+							| ((setupPacket->wValue & DCFG_DEVICEADDR_UNSHIFTED_MASK) << DCFG_DEVICEADDR_SHIFT), USB + DCFG);
+
+					// send an acknowledgement
+					//sendControl(ep0controlSendBuffer, 0);
+
+					if(dev->usb_state < USBError) {
+						change_state(USBAddress);
+					}
+
+					dev->driver->setup(&dev->gadget, setupPacket);
+
+					// get the next SETUP packet
+					//receiveControl(ep0controlRecvBuffer, sizeof(USBSetupPacket));
+				}
+			} else {
+				//uartPrintf("\t<begin callEndpointHandlers>\r\n");
+				//callEndpointHandlers();
+				//uartPrintf("\t<end callEndpointHandlers>\r\n");
+			}
+
+			process = 1;
+		}
+
+		if((status & GINTMSK_SOF) == GINTMSK_SOF) {
+			__raw_writel(GINTMSK_SOF, USB + GINTSTS);
+			process = 1;
+		}
+
+		if((status & GINTMSK_SUSPEND) == GINTMSK_SUSPEND) {
+			__raw_writel(GINTMSK_SUSPEND, USB + GINTSTS);
+			process = 1;
+		}
+
+		status = __raw_readl(USB + GINTSTS) & __raw_readl(USB + GINTMSK);
+	}
+	spin_unlock(&dev->lock);
+	return IRQ_HANDLED;
+}
+
+static int iphone_udc_get_frame(struct usb_gadget *_gadget)
+{
+	return -EOPNOTSUPP;
+}
+
+static const struct usb_gadget_ops iphone_udc_ops = {
+	.get_frame	= iphone_udc_get_frame,
+	// no remote wakeup
+	// not selfpowered
+};
+
+static void gadget_release(struct device *_dev)
+{
+	struct iphone_udc* dev = the_controller;
+
+	kfree(dev);
+}
+
+static int iphone_udc_remove(struct platform_device *pdev)
+{
+	int retval = 0;
+
+	return retval;
+}
+
+static int iphone_udc_setup(struct iphone_udc* dev)
+{
+        int retval = 0;
+	int i;
+
+	InEPRegs = (USBEPRegisters*)(USB + USB_INREGS);
+	OutEPRegs = (USBEPRegisters*)(USB + USB_OUTREGS);
+
+	change_state(USBStart);
+
+	// Power on hardware
+	iphone_power_ctrl(POWER_USB, 1);
+	mdelay(USB_START_DELAYMS);
+
+	// Set up the hardware
+	iphone_clock_gate_switch(USB_OTGCLOCKGATE, 1);
+	iphone_clock_gate_switch(USB_PHYCLOCKGATE, 1);
+
+	// Generate a soft disconnect on host
+	__raw_writel(__raw_readl(USB + DCTL) | DCTL_SFTDISCONNECT, USB + DCTL);
+	mdelay(USB_SFTDISCONNECT_DELAYMS);
+
+	// power on OTG
+	__raw_writel(__raw_readl(USB + USB_ONOFF) & (~USB_ONOFF_OFF), USB + USB_ONOFF);
+	udelay(USB_ONOFFSTART_DELAYUS);
+
+	// power on PHY
+	__raw_writel(OPHYPWR_POWERON, USB_PHY + OPHYPWR);
+	udelay(USB_PHYPWRPOWERON_DELAYUS);
+
+	// select clock
+	__raw_writel((__raw_readl(USB_PHY + OPHYCLK) & OPHYCLK_CLKSEL_MASK) | OPHYCLK_CLKSEL_48MHZ, USB_PHY + OPHYCLK);
+
+	// reset phy
+	__raw_writel(__raw_readl(USB_PHY + ORSTCON) | ORSTCON_PHYSWRESET, USB_PHY + ORSTCON);
+	udelay(USB_RESET2_DELAYUS);
+	__raw_writel(__raw_readl(USB_PHY + ORSTCON) & (~ORSTCON_PHYSWRESET), USB_PHY + ORSTCON);
+	udelay(USB_RESET_DELAYUS);
+
+	__raw_writel(GRSTCTL_CORESOFTRESET, USB + GRSTCTL);
+
+	// wait until reset takes
+	while((__raw_readl(USB + GRSTCTL) & GRSTCTL_CORESOFTRESET) == GRSTCTL_CORESOFTRESET);
+
+	// wait until reset completes
+	while((__raw_readl(USB + GRSTCTL) & ~GRSTCTL_AHBIDLE) != 0);
+
+	udelay(USB_RESETWAITFINISH_DELAYUS);
+
+	// allow host to reconnect
+	__raw_writel(__raw_readl(USB + DCTL) & (~DCTL_SFTDISCONNECT), USB + DCTL);
+	udelay(USB_SFTCONNECT_DELAYUS);
+
+	// flag all interrupts as positive, maybe to disable them
+
+	// Set 7th EP? This is what iBoot does
+	InEPRegs[USB_NUM_ENDPOINTS].interrupt = USB_EPINT_INEPNakEff | USB_EPINT_INTknEPMis | USB_EPINT_INTknTXFEmp
+		| USB_EPINT_TimeOUT | USB_EPINT_AHBErr | USB_EPINT_EPDisbld | USB_EPINT_XferCompl;
+	OutEPRegs[USB_NUM_ENDPOINTS].interrupt = USB_EPINT_OUTTknEPDis
+		| USB_EPINT_SetUp | USB_EPINT_AHBErr | USB_EPINT_EPDisbld | USB_EPINT_XferCompl;
+
+	for(i = 0; i < USB_NUM_ENDPOINTS; i++) {
+		InEPRegs[i].interrupt = USB_EPINT_INEPNakEff | USB_EPINT_INTknEPMis | USB_EPINT_INTknTXFEmp
+			| USB_EPINT_TimeOUT | USB_EPINT_AHBErr | USB_EPINT_EPDisbld | USB_EPINT_XferCompl;
+		OutEPRegs[i].interrupt = USB_EPINT_OUTTknEPDis
+			| USB_EPINT_SetUp | USB_EPINT_AHBErr | USB_EPINT_EPDisbld | USB_EPINT_XferCompl;
+	}
+
+	// disable all interrupts until endpoint descriptors and configuration structures have been setup
+	__raw_writel(GINTMSK_NONE, USB + GINTMSK);
+	__raw_writel(USB_EPINT_NONE, USB + DIEPMSK);
+	__raw_writel(USB_EPINT_NONE, USB + DOEPMSK);
+
+        retval = request_irq(USB_INTERRUPT, usbIRQHandler, IRQF_DISABLED, driver_name, dev);
+	disable_irq(USB_INTERRUPT);
+	return retval;
+}
+
+static int iphone_udc_probe(struct platform_device *pdev)
+{
+	int retval = 0;
+	struct iphone_udc *dev;
+
+	dev = kzalloc(sizeof(struct iphone_udc), GFP_KERNEL);
+	if(dev == NULL) {
+		retval = -ENOMEM;
+		goto done;
+	}
+
+	spin_lock_init(&dev->lock);
+	dev->pdev = pdev;
+	dev->gadget.ops = &iphone_udc_ops;
+
+	device_initialize(&dev->gadget.dev);
+	dev_set_name(&dev->gadget.dev, "gadget");
+	dev->gadget.dev.parent = &pdev->dev;
+	dev->gadget.dev.dma_mask = pdev->dev.dma_mask;
+	dev->gadget.dev.release = gadget_release;
+	dev->gadget.name = driver_name;
+	dev->gadget.is_dualspeed = 1;
+
+	the_controller = dev;
+
+	retval = iphone_udc_setup(dev);
+	if(retval == 0)
+	{
+		printk("%s: controller probed\n", driver_name);
+		return 0;
+	} else
+	{
+		printk("%s: controller probe failed!\n", driver_name);
+	}
+
+done:
+	if(dev)
+		iphone_udc_remove(pdev);
+
+	return retval;
+}
+
+static struct platform_driver iphone_udc_driver = {
+        .probe          = iphone_udc_probe,
+        .remove         = iphone_udc_remove,
+        .suspend        = NULL,
+        .resume         = NULL,
+        .driver         = {
+                .owner  = THIS_MODULE,
+                .name   = driver_name,
+        },
+};
+
+static struct platform_device* iphone_udc_device;
+
+static int __init iphone_udc_init(void)
+{
+	int ret;
+
+	ret = platform_driver_register(&iphone_udc_driver);
+	if(!ret) {
+		iphone_udc_device = platform_device_register_simple("iphoneudc", 0,
+				NULL, 0);
+
+		if (IS_ERR(iphone_udc_device)) {
+			platform_driver_unregister(&iphone_udc_driver);
+			ret = PTR_ERR(iphone_udc_device);
+			printk("%s: Error loading version %s\n", driver_name, DRIVER_VERSION);
+		} else {
+			printk("%s: loaded version %s\n", driver_name, DRIVER_VERSION);
+		}
+	}
+
+	return ret;
+}
+
+static void __exit iphone_udc_exit(void)
+{
+        platform_device_unregister(iphone_udc_device);
+        platform_driver_unregister(&iphone_udc_driver);
+        printk("Unloaded %s version %s\n", driver_name, DRIVER_VERSION);
+}
+
+module_init(iphone_udc_init);
+module_exit(iphone_udc_exit);
+
+#if 0
 struct iphone_usb {
         spinlock_t lock;
 };
@@ -408,8 +1104,8 @@ static u8 addStringDescriptor(const char* descriptorString) {
 	stringDescriptors[newIndex]->bDescriptorType = USBStringDescriptorType;
 	memcpy(stringDescriptors[newIndex]->bString, descriptorString, sLen);
 
-	firstStringDescriptor = (USBFirstStringDescriptor*) krealloc(firstStringDescriptor, sizeof(USBFirstStringDescriptor) + (sizeof(uint16_t) * numStringDescriptors), GFP_KERNEL);
-	firstStringDescriptor->bLength = sizeof(USBFirstStringDescriptor) + (sizeof(uint16_t) * numStringDescriptors);
+	firstStringDescriptor = (USBFirstStringDescriptor*) krealloc(firstStringDescriptor, sizeof(USBFirstStringDescriptor) + (sizeof(u16) * numStringDescriptors), GFP_KERNEL);
+	firstStringDescriptor->bLength = sizeof(USBFirstStringDescriptor) + (sizeof(u16) * numStringDescriptors);
 	firstStringDescriptor->bDescriptorType = USBStringDescriptorType;
 	firstStringDescriptor->wLANGID[newIndex] = USB_LANGID_ENGLISH_US;
 
@@ -460,7 +1156,7 @@ static void releaseConfigurations(void) {
 	configurations = NULL;
 }
 
-static int addConfiguration(u8 bConfigurationValue, uint8_t iConfiguration, uint8_t selfPowered, uint8_t remoteWakeup, uint16_t maxPower) {
+static int addConfiguration(u8 bConfigurationValue, uint8_t iConfiguration, uint8_t selfPowered, uint8_t remoteWakeup, u16 maxPower) {
 	int newIndex = deviceDescriptor.bNumConfigurations;
 	deviceDescriptor.bNumConfigurations++;
 	deviceQualifierDescriptor.bNumConfigurations++;
@@ -765,7 +1461,7 @@ static irqreturn_t usbIRQHandler(int irq, void* _dev)
 				// recall our earlier receiveControl calls. We now should have 8 bytes of goodness in controlRecvBuffer.
 				USBSetupPacket* setupPacket = (USBSetupPacket*) ep0controlRecvBuffer;
 
-				uint16_t length;
+				u16 length;
 				u32 totalLength;
 				USBStringDescriptor* strDesc;
 				if(USBSetupPacketRequestTypeType(setupPacket->bmRequestType) != USBSetupPacketVendor) {
@@ -832,8 +1528,8 @@ static irqreturn_t usbIRQHandler(int irq, void* _dev)
 
 						case USB_GET_STATUS:
 							// FIXME: iBoot doesn't really care about this status
-							*((uint16_t*) ep0controlSendBuffer) = 0;
-							sendControl(ep0controlSendBuffer, sizeof(uint16_t));
+							*((u16*) ep0controlSendBuffer) = 0;
+							sendControl(ep0controlSendBuffer, sizeof(u16));
 							break;
 
 						case USB_GET_CONFIGURATION:
@@ -1041,13 +1737,13 @@ static int iphone_usb_start(USBEnumerateHandler hEnumerate, USBStartHandler hSta
 	__raw_writel(RX_FIFO_DEPTH, USB + GRXFSIZ);
 	__raw_writel((TX_FIFO_DEPTH << GNPTXFSIZ_DEPTH_SHIFT) | TX_FIFO_STARTADDR, USB + GNPTXFSIZ);
 
-	for(i = 0; i < USB_NUM_ENDPOINTS; i++) {
+	/*for(i = 0; i < USB_NUM_ENDPOINTS; i++) {
 		InEPRegs[i].interrupt = USB_EPINT_INEPNakEff | USB_EPINT_INTknEPMis | USB_EPINT_INTknTXFEmp
 			| USB_EPINT_TimeOUT | USB_EPINT_AHBErr | USB_EPINT_EPDisbld | USB_EPINT_XferCompl;
 		OutEPRegs[i].interrupt = USB_EPINT_OUTTknEPDis
 			| USB_EPINT_SetUp | USB_EPINT_AHBErr | USB_EPINT_EPDisbld | USB_EPINT_XferCompl;
 		
-	}
+	}*/
 
 	__raw_writel(GINTMSK_OTG | GINTMSK_SUSPEND | GINTMSK_RESET | GINTMSK_INEP | GINTMSK_OEP | GINTMSK_DISCONNECT, USB + GINTMSK);
 	__raw_writel(DAINTMSK_ALL, USB + DAINTMSK);
@@ -1055,8 +1751,8 @@ static int iphone_usb_start(USBEnumerateHandler hEnumerate, USBStartHandler hSta
 	__raw_writel(USB_EPINT_XferCompl | USB_EPINT_SetUp | USB_EPINT_Back2BackSetup, USB + DOEPMSK);
 	__raw_writel(USB_EPINT_XferCompl | USB_EPINT_AHBErr | USB_EPINT_TimeOUT, USB + DIEPMSK);
 
-	InEPRegs[0].interrupt = USB_EPINT_ALL;
-	OutEPRegs[0].interrupt = USB_EPINT_ALL;
+	//InEPRegs[0].interrupt = USB_EPINT_ALL;
+	//OutEPRegs[0].interrupt = USB_EPINT_ALL;
 
 	__raw_writel(DCTL_PROGRAMDONE + DCTL_CGOUTNAK + DCTL_CGNPINNAK, USB + DCTL);
 	udelay(USB_PROGRAMDONE_DELAYUS);
@@ -1071,7 +1767,7 @@ static int iphone_usb_start(USBEnumerateHandler hEnumerate, USBStartHandler hSta
 	return 0;
 }
 
-static int addEndpointDescriptor(USBInterface* interface, int endpoint, USBDirection direction, USBTransferType transferType, USBSynchronisationType syncType, USBUsageType usageType, uint16_t wMaxPacketSize, int bInterval) {
+static int addEndpointDescriptor(USBInterface* interface, int endpoint, USBDirection direction, USBTransferType transferType, USBSynchronisationType syncType, USBUsageType usageType, u16 wMaxPacketSize, int bInterval) {
 	int newIndex;
 	if(direction > 2)
 		return -1;
@@ -1619,5 +2315,6 @@ static void __exit iphone_usb_exit(void)
 
 module_init(iphone_usb_init);
 module_exit(iphone_usb_exit);
+#endif
 
 MODULE_LICENSE("GPL");
