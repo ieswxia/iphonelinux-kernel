@@ -199,7 +199,7 @@ static u16 packetsizeFromSpeed(int speed_id)
 
 static void receive(int endpoint, USBTransferType transferType, void* buffer, int packetLength, int bufferLen)
 {
-	printk("receive: %d %d %p %d\n", packetLength, bufferLen, buffer, transferType);
+	//printk("receive: %d %d %p %d\n", packetLength, bufferLen, buffer, transferType);
 	if(endpoint == USB_CONTROLEP) {
 		OutEPRegs[endpoint].transferSize = ((USB_SETUP_PACKETS_AT_A_TIME & DOEPTSIZ0_SUPCNT_MASK) << DOEPTSIZ0_SUPCNT_SHIFT)
 			| ((USB_SETUP_PACKETS_AT_A_TIME & DOEPTSIZ0_PKTCNT_MASK) << DEPTSIZ_PKTCNT_SHIFT) | (bufferLen & DEPTSIZ0_XFERSIZ_MASK);
@@ -414,14 +414,15 @@ static void handleRxInterrupts(int endpoint) {
 	if((outInterruptStatus[endpoint] & USB_EPINT_XferCompl) == USB_EPINT_XferCompl) {
 		OutEPRegs[endpoint].interrupt = USB_EPINT_XferCompl;
 		if(endpoint == 0) {
-			receiveControl(ep0controlRecvBuffer, sizeof(USBSetupPacket));
+			receiveControl(ep0controlRecvBuffer, sizeof(struct usb_ctrlrequest));
 		}
 	}
 }
 
 static void done(struct iphone_udc_ep *ep, struct iphone_udc_request *req, int status)
 {
-	printk("%s: %p\n", __FUNCTION__, ep);
+	//printk("%s: %p\n", __FUNCTION__, ep);
+	udelay(1000);
 	list_del_init(&req->queue);
 
 	if (likely(req->req.status == -EINPROGRESS))
@@ -434,6 +435,18 @@ static void done(struct iphone_udc_ep *ep, struct iphone_udc_request *req, int s
 	spin_lock(&ep->dev->lock);
 }
 
+void nuke(struct iphone_udc_ep *ep, int status)
+{
+	struct iphone_udc_request *req;
+
+	/* called with irqs blocked */
+	while (!list_empty(&ep->queue)) {
+		req = list_entry(ep->queue.next, struct iphone_udc_request, queue);
+		done(ep, req, status);
+	}
+}
+
+
 static void write_packet(struct iphone_udc_ep* ep, struct iphone_udc_request* req, int max)
 {
 	int length;
@@ -444,7 +457,7 @@ static void write_packet(struct iphone_udc_ep* ep, struct iphone_udc_request* re
 	} else {
 		length = 0;
 	}
-	printk("%s (%d): %d - %d (%d)\n", __FUNCTION__, ep->num, req->req.actual, length, req->req.length);
+	//printk("%s (%d): %d - %d (%d)\n", __FUNCTION__, ep->num, req->req.actual, length, req->req.length);
 	req->req.actual += length;
 	if(ep->num == 0) {
 		usbTxRx(ep->num, USBIn, USBControl, ep->txBuf, length);
@@ -468,7 +481,7 @@ static void advanceQueue(struct iphone_udc* dev, struct iphone_udc_ep* ep)
 {
 	struct iphone_udc_request *req;
 
-	printk("advanceQueue on ep %d\n", ep->num);
+	//printk("advanceQueue on ep %d\n", ep->num);
 
 	if (list_empty(&ep->queue))
 		req = NULL;
@@ -495,7 +508,7 @@ static void txCompleteRequest(int endpoint)
 	struct iphone_udc_request *req;
 	struct iphone_udc_ep *ep = &dev->ep[endpoint];
 
-	printk("txCompleteRequest on ep %d!\n", endpoint);
+	//printk("txCompleteRequest on ep %d!\n", endpoint);
 
 	if (list_empty(&ep->queue))
 		req = NULL;
@@ -506,14 +519,14 @@ static void txCompleteRequest(int endpoint)
 		return;
 
 	if(req->req.length == 0) {
-		printk("%s: done with ZLP\n", __FUNCTION__);
+		//printk("%s: done with ZLP\n", __FUNCTION__);
 		done(ep, req, 0);
 		advanceQueue(dev, ep);
 		return;
 	}
 
 	if(req->req.actual == req->req.length) {
-		printk("%s: done with non-ZLP\n", __FUNCTION__);
+		//printk("%s: done with non-ZLP\n", __FUNCTION__);
 		done(ep, req, 0);
 		advanceQueue(dev, ep);
 		return;
@@ -532,7 +545,7 @@ static void rxCompleteRequest(int endpoint, int leftToTransfer)
 	int transferred;
 	int requested;
 
-	printk("rxCompleteRequest on ep %d!\n", endpoint);
+	//printk("rxCompleteRequest on ep %d!\n", endpoint);
 
 	if (list_empty(&ep->queue))
 		req = NULL;
@@ -593,7 +606,7 @@ static int resetUSB(void)
 	__raw_writel(USB_EPINT_XferCompl | USB_EPINT_SetUp | USB_EPINT_Back2BackSetup, USB + DOEPMSK);
 	__raw_writel(USB_EPINT_XferCompl | USB_EPINT_AHBErr | USB_EPINT_TimeOUT, USB + DIEPMSK);
 
-	receiveControl(ep0controlRecvBuffer, sizeof(USBSetupPacket));
+	receiveControl(ep0controlRecvBuffer, sizeof(struct usb_ctrlrequest));
 
 	return 0;
 }
@@ -659,7 +672,7 @@ static struct usb_request* iphone_udc_alloc_request(struct usb_ep *_ep, gfp_t gf
 {
 	struct iphone_udc_request *req;
 
-	printk("%s\n", __FUNCTION__);
+	//printk("%s\n", __FUNCTION__);
 
 	if (!_ep)
 		return NULL;
@@ -675,7 +688,7 @@ static void iphone_udc_free_request(struct usb_ep *_ep, struct usb_request *_req
 {
 	struct iphone_udc_request* req;
 
-	printk("%s\n", __FUNCTION__);
+	//printk("%s\n", __FUNCTION__);
 
 	if (!_ep || !_req)
 		return;
@@ -692,13 +705,15 @@ static int iphone_udc_queue(struct usb_ep *_ep, struct usb_request *_req, gfp_t 
 	struct iphone_udc* dev;
 	unsigned long flags;
 
-	printk("%s: EP-%p\n", __FUNCTION__, _ep);
+	//printk("%s: EP-%p\n", __FUNCTION__, _ep);
 
 	req = container_of(_req, struct iphone_udc_request, req);
 	if (unlikely
 			(!_req || !_req->complete || !_req->buf
 			 || !list_empty(&req->queue))) {
 		printk("%s: bad params: %p %p %p %d\n", __FUNCTION__, _req, _req->complete, _req->buf, list_empty(&req->queue));
+		printk("%s: BAD PARAMS: %s queue req %p, len %d buf %p\n",
+				__FUNCTION__, _ep->name, _req, _req->length, _req->buf);
 		return -EINVAL;
 	}
 
@@ -714,8 +729,8 @@ static int iphone_udc_queue(struct usb_ep *_ep, struct usb_request *_req, gfp_t 
 		return -ESHUTDOWN;
 	}
 
-	printk("%s: %s queue req %p, len %d buf %p\n",
-			__FUNCTION__, _ep->name, _req, _req->length, _req->buf);
+/*	printk("%s: %s queue req %p, len %d buf %p\n",
+			__FUNCTION__, _ep->name, _req, _req->length, _req->buf);*/
 
 	spin_lock_irqsave(&dev->lock, flags);
 	_req->status = -EINPROGRESS;
@@ -726,7 +741,7 @@ static int iphone_udc_queue(struct usb_ep *_ep, struct usb_request *_req, gfp_t 
 		list_add_tail(&req->queue, &ep->queue);
 		advanceQueue(dev, ep);
 	} else {
-		printk("not writing due to queue not empty\n");
+		//printk("not writing due to queue not empty\n");
 		list_add_tail(&req->queue, &ep->queue);
 	}
 
@@ -882,7 +897,7 @@ static int iphone_udc_start(struct iphone_udc* dev) {
 
         retval = request_irq(USB_INTERRUPT, usbIRQHandler, IRQF_DISABLED, driver_name, dev);
 
-	receiveControl(ep0controlRecvBuffer, sizeof(USBSetupPacket));
+	receiveControl(ep0controlRecvBuffer, sizeof(struct usb_ctrlrequest));
 
         return retval;
 }
@@ -1015,6 +1030,8 @@ static irqreturn_t usbIRQHandler(int irq, void* _dev)
 					}
 				}
 
+				nuke(&dev->ep[0], -EPROTO);
+
 				if(setupPacket->bRequest == USB_SET_ADDRESS)
 				{
 					usb_speed = DSTS_GET_SPEED(__raw_readl(USB + DSTS));
@@ -1044,11 +1061,11 @@ static irqreturn_t usbIRQHandler(int irq, void* _dev)
 						change_state(USBAddress);
 					}
 				} else {
-					if(setupPacket->bRequest == USB_SET_CONFIGURATION)
+					/*if(setupPacket->bRequest == USB_SET_CONFIGURATION)
 					{
 						// send an acknowledgement
 						sendControl(ep0controlSendBuffer, 0);
-					}
+					}*/
 
 					spin_unlock(&dev->lock);
 					dev->driver->setup(&dev->gadget, setupPacket);
@@ -1056,7 +1073,7 @@ static irqreturn_t usbIRQHandler(int irq, void* _dev)
 				}
 
 				// get the next SETUP packet
-				receiveControl(ep0controlRecvBuffer, sizeof(USBSetupPacket));
+				receiveControl(ep0controlRecvBuffer, sizeof(struct usb_ctrlrequest));
 			} else {
 				//uartPrintf("\t<begin callEndpointHandlers>\r\n");
 				callEndpointHandlers();

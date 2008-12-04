@@ -21,13 +21,6 @@
 #ifndef IPHONE_USB_H
 #define IPHONE_USB_H
 
-// assigned by USB Org
-#define VENDOR_APPLE 0x5AC
-
-// assigned by Apple
-#define PRODUCT_IPHONE 0x1280
-#define DEVICE_IPHONE 0x1103
-
 // values we're using
 #define USB_MAX_PACKETSIZE 64
 #define USB_SETUP_PACKETS_AT_A_TIME 1
@@ -116,55 +109,6 @@ typedef struct USBEPRegisters {
 	volatile u32 field_1C;
 } USBEPRegisters;
 
-typedef struct USBDeviceDescriptor {
-	u8 bLength;
-	u8 bDescriptorType;
-	u16 bcdUSB;
-	u8 bDeviceClass;
-	u8 bDeviceSubClass;
-	u8 bDeviceProtocol;
-	u8 bMaxPacketSize;
-	u16 idVendor;
-	u16 idProduct;
-	u16 bcdDevice;
-	u8 iManufacturer;
-	u8 iProduct;
-	u8 iSerialNumber;
-	u8 bNumConfigurations;
-} __attribute__ ((__packed__)) USBDeviceDescriptor;
-
-typedef struct USBConfigurationDescriptor {
-	u8 bLength;
-	u8 bDescriptorType;
-	u16 wTotalLength;
-	u8 bNumInterfaces;
-	u8 bConfigurationValue;
-	u8 iConfiguration;
-	u8 bmAttributes;
-	u8 bMaxPower;
-} __attribute__ ((__packed__)) USBConfigurationDescriptor;
-
-typedef struct USBInterfaceDescriptor {
-	u8 bLength;
-	u8 bDescriptorType;
-	u8 bInterfaceNumber;
-	u8 bAlternateSetting;
-	u8 bNumEndpoints;
-	u8 bInterfaceClass;
-	u8 bInterfaceSubClass;
-	u8 bInterfaceProtocol;
-	u8 iInterface;
-} __attribute__ ((__packed__)) USBInterfaceDescriptor;
-
-typedef struct USBEndpointDescriptor {
-	u8 bLength;
-	u8 bDescriptorType;
-	u8 bEndpointAddress;
-	u8 bmAttributes;
-	u16 wMaxPacketSize;
-	u8 bInterval;
-} __attribute__ ((__packed__)) USBEndpointDescriptor;
-
 typedef struct USBDeviceQualifierDescriptor {
 	u8 bLength;
 	u8 bDescriptorType;
@@ -176,39 +120,6 @@ typedef struct USBDeviceQualifierDescriptor {
 	u8 bNumConfigurations;
 	u8 bReserved;
 } __attribute__ ((__packed__)) USBDeviceQualifierDescriptor;
-
-typedef struct USBStringDescriptor {
-	u8 bLength;
-	u8 bDescriptorType;
-	char bString[];
-} __attribute__ ((__packed__)) USBStringDescriptor;
-
-typedef struct USBFirstStringDescriptor {
-	u8 bLength;
-	u8 bDescriptorType;
-	u16 wLANGID[];
-} __attribute__ ((__packed__)) USBFirstStringDescriptor;
-
-typedef struct USBInterface {
-	USBInterfaceDescriptor descriptor;
-	USBEndpointDescriptor* endpointDescriptors;
-} USBInterface;
-
-typedef struct USBConfiguration {
-	USBConfigurationDescriptor descriptor;
-	USBInterface* interfaces;
-} USBConfiguration;
-
-typedef struct USBSetupPacket {
-	u8 bmRequestType;
-	u8 bRequest;
-	u16 wValue;
-	u16 wIndex;
-	u16 wLength;
-} __attribute__ ((__packed__)) USBSetupPacket;
-
-typedef void (*USBStartHandler)(void);
-typedef void (*USBEnumerateHandler)(USBInterface* interface);
 
 #define OPENIBOOTCMD_DUMPBUFFER 0
 #define OPENIBOOTCMD_DUMPBUFFER_LEN 1
