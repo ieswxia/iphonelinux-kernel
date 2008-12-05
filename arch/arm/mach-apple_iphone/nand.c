@@ -27,6 +27,8 @@
 
 #include <asm/uaccess.h>
 
+#define SECTOR_SHIFT		9
+
 static struct iphone_nand_device {
 	spinlock_t lock;
 	struct gendisk* gd;
@@ -83,7 +85,7 @@ static int iphone_nand_make_request(struct request_queue *q, struct bio *bio)
 	int err = -EIO;
 
 	sector = bio->bi_sector;
-	if (sector + (bio->bi_size / dev->sectorSize) >
+	if (sector + (bio->bi_size >> SECTOR_SHIFT) >
 						get_capacity(bdev->bd_disk))
 		goto out;
 
@@ -97,7 +99,7 @@ static int iphone_nand_make_request(struct request_queue *q, struct bio *bio)
 					bvec->bv_offset, rw, sector);
 		if (err)
 			break;
-		sector += len / dev->sectorSize;
+		sector += len >> SECTOR_SHIFT;
 	}
 
 out:
@@ -112,7 +114,7 @@ static int __init iphone_nand_init(void)
 	spin_lock_init(&Device.lock);
 	major_num = register_blkdev(major_num, "nand");
 
-	Device.sectorSize = 512;
+	Device.sectorSize = 4096;
 
 	if(major_num <= 0)
 	{
