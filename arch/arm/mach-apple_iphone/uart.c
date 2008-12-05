@@ -97,7 +97,7 @@ static int iphone_uart_set_baud_rate(int ureg, u32 baud) {
 
 	//u32 clockFrequency = (UARTs[ureg].clock == UART_CLOCK_PCLK) ? PeripheralFrequency : FixedFrequency;
 	// FIXME: Hardwired to fixed frequency
-	clockFrequency = 24000000;
+	clockFrequency = FREQUENCY_FIXED;
 	div_val = clockFrequency / (baud * UARTs[ureg].sample_rate) - 1;
 
 	__raw_writel((__raw_readl(HWUarts[ureg].UBAUD) & (~UART_DIVVAL_MASK)) | div_val, HWUarts[ureg].UBAUD);

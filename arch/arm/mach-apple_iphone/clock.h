@@ -18,6 +18,14 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#define FREQUENCY_CPU 412000000
+#define FREQUENCY_MEMORY 137333333
+#define FREQUENCY_BUS 103000000
+#define FREQUENCY_PERIPHERAL 51500000
+#define FREQUENCY_DISPLAY 54000000
+#define FREQUENCY_FIXED 24000000
+#define FREQUENCY_TIMEBASE 6000000
+
 extern int iphone_power_ctrl(u32 device, int on_off);
 extern void iphone_clock_gate_switch(u32 gate, int on_off);
 extern u64 iphone_microtime(void);
