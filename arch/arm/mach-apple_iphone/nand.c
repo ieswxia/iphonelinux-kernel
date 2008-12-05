@@ -46,33 +46,62 @@ static struct block_device_operations iphone_nand_fops = {
 	.locked_ioctl =		iphone_nand_ioctl,
 };
 
-static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long sectorCount, char* buffer) {
-	memset(buffer, 0, sectorCount * dev->sectorSize);
+static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
+	printk("iphone_nand_read: sector %ld, len %ld to %p\n", sectorNum, len, buffer);
+	memset(buffer, 0, len);
 }
 
-static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long sectorCount, char* buffer) {
+static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
 
 }
 
+static int iphone_nand_do_bvec(struct iphone_nand_device* dev, struct page *page,
+			unsigned int len, unsigned int off, int rw,
+			sector_t sector)
+{
+	void *mem;
+	int err = 0;
+
+	mem = kmap_atomic(page, KM_USER0);
+	if (rw == READ) {
+		iphone_nand_read(dev, sector, len, mem + off);
+		flush_dcache_page(page);
+	} else
+		iphone_nand_write(dev, sector, len, mem + off);
+	kunmap_atomic(mem, KM_USER0);
+
+	return err;
+}
 static int iphone_nand_make_request(struct request_queue *q, struct bio *bio)
 {
-	struct request *req;
+	struct block_device* bdev = bio->bi_bdev;
+	struct iphone_nand_device* dev = bdev->bd_disk->private_data;
+	int rw;
+	struct bio_vec *bvec;
+	sector_t sector;
+	int i;
+	int err = -EIO;
 
-	while ((req = elv_next_request(q)) != NULL) {
-		if (!blk_fs_request(req)) {
-			end_request(req, 0);
-			continue;
-		}
-		if(rq_data_dir(req))
-		{
-			// Write
-			iphone_nand_write(&Device, req->sector, req->current_nr_sectors, req->buffer);
-		} else {
-			// Read
-			iphone_nand_read(&Device, req->sector, req->current_nr_sectors, req->buffer);
-		}
-		end_request(req, 1);
+	sector = bio->bi_sector;
+	if (sector + (bio->bi_size / dev->sectorSize) >
+						get_capacity(bdev->bd_disk))
+		goto out;
+
+	rw = bio_rw(bio);
+	if (rw == READA)
+		rw = READ;
+
+	bio_for_each_segment(bvec, bio, i) {
+		unsigned int len = bvec->bv_len;
+		err = iphone_nand_do_bvec(dev, bvec->bv_page, len,
+					bvec->bv_offset, rw, sector);
+		if (err)
+			break;
+		sector += len / dev->sectorSize;
 	}
+
+out:
+	bio_endio(bio, err);
 
 	return 0;
 }
