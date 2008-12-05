@@ -13,9 +13,9 @@
 #include <linux/sched.h>
 
 #include <mach/hardware.h>
-#include "dma.h"
+#include <mach/iphone-dma.h>
 #include <mach/dma.h>
-#include "clock.h"
+#include <mach/iphone-clock.h>
 
 #define GET_BITS(x, start, length) ((((u32)(x)) << (32 - ((start) + (length)))) >> (32 - (length)))
 

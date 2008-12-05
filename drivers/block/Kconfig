@@ -446,4 +446,10 @@ config BLK_DEV_HD
 
 	  If unsure, say N.
 
+config BLK_DEV_IPHONE
+	bool "iPhone NAND support"
+	depends on MACH_APPLE_IPHONE
+	help
+          NAND driver for the Applpe iPhone.
+
 endif # BLK_DEV

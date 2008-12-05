@@ -22,7 +22,7 @@
 #include <linux/device.h>
 #include <linux/io.h>
 #include <mach/hardware.h>
-#include "clock.h"
+#include <mach/iphone-clock.h>
 
 #define POWER IO_ADDRESS(0x39A00000)	/* probably a part of the system controller */
 

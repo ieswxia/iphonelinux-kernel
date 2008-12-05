@@ -27,19 +27,24 @@
 #include <linux/vmalloc.h>
 #include <linux/timer.h>
 #include <linux/delay.h>
+#include <linux/hdreg.h>
+#include <linux/platform_device.h>
 
 #include <mach/hardware.h>
 #include <asm/uaccess.h>
 #include <mach/nand.h>
-#include "nand.h"
-#include "ftl.h"
-#include "clock.h"
-#include "dma.h"
+#include "iphone-nand.h"
+#include "iphone-ftl.h"
+#include <mach/iphone-clock.h>
+#include <mach/iphone-dma.h>
 
 #define DebugPrintf(...)
 //#define DebugPrintf printk
 #define SECTOR_SHIFT		9
 #define has_elapsed(startTime, timeout) ((iphone_microtime() - (startTime)) > (timeout))
+
+#define driver_name "iphonenand"
+#define DRIVER_VERSION          __DATE__
 
 /*
  * NAND SECTION
@@ -618,14 +623,12 @@ static int nand_read(int bank, int page, u8* buffer, u8* spare, int doECC, int c
 	if(doECC) {
 		if(buffer) {
 			eccFailed = (checkECC(ECCType, aTemporaryReadEccBuf, aTemporarySBuf + sizeof(SpareData)) != 0);
-			printk("page ecc: %d\n", eccFailed);
 		}
 
+		memset(aTemporaryReadEccBuf, 0xFF, SECTOR_SIZE);
 		memcpy(aTemporaryReadEccBuf, aTemporarySBuf, sizeof(SpareData));
 		ecc_perform(ECCType, 1, aTemporaryReadEccBuf, aTemporarySBuf + sizeof(SpareData) + TotalECCDataSize);
 		if(ecc_finish() != 0) {
-			printk("spare ecc: %d\n", eccFailed);
-			memset(aTemporaryReadEccBuf, 0xFF, SECTOR_SIZE);
 			eccFailed |= 1;
 		}
 	}
@@ -870,21 +873,12 @@ static int FTL_Init(void) {
 // pageBuffer and spareBuffer are represented by single BUF struct within Whimory
 static int vfl_read_page(int bank, int block, int page, u8* pageBuffer, u8* spareBuffer) {
 	int i;
-	int j;
 	memset(spareBuffer, 0, Data.bytesPerSpare);
 	for(i = 0; i < 8; i++) {
 		if(nand_read(bank, (block * Data.pagesPerBlock) + page + i, pageBuffer, spareBuffer, 1, 1) == 0) {
 			SpareData* spareData = (SpareData*) spareBuffer;
-			printk("Successfully read something!: ");
-			for(j = 0; j < 32; j++) {
-				printk("%02x ", spareBuffer[j]);
-			}
-			printk("\n");
-
 			if(spareData->field_8 == 0 && spareData->field_9 == 0x80)
 				return 1;
-			else
-				printk("field_8: %x, field_9: %x\n", spareData->field_8, spareData->field_9);
 		}
 	}
 	return 0;
@@ -1730,6 +1724,26 @@ static struct iphone_nand_device {
 static int iphone_nand_ioctl(struct block_device *bdev, fmode_t mode,
 			unsigned int cmd, unsigned long arg)
 {
+	long size;
+	struct hd_geometry geo;
+
+	switch(cmd) {
+		/*
+		 * The only command we need to interpret is HDIO_GETGEO, since
+		 * we can't partition the drive otherwise.  We have no real
+		 * geometry, of course, so make something up.
+		 */
+		case HDIO_GETGEO:
+			size = Data.pagesPerSubBlk * Data.userSubBlksTotal * (Device.sectorSize >> SECTOR_SHIFT);
+			geo.cylinders = (size & ~0x3f) >> 6;
+			geo.heads = 4;
+			geo.sectors = 16;
+			geo.start = 4;
+			if (copy_to_user((void *) arg, &geo, sizeof(geo)))
+				return -EFAULT;
+			return 0;
+	}
+
 	return -ENOTTY;
 }
 
@@ -1739,82 +1753,56 @@ static struct block_device_operations iphone_nand_fops = {
 };
 
 static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
-	printk("iphone_nand_read: sector %ld (%ld), len %ld (%ld) to %p\n", sectorNum, sectorNum >> 3, len, len >> 12, buffer);
-	FTL_Read(sectorNum >> 3, len >> 12, buffer);
+	printk("iphone_nand_read: sector %ld (%ld), len %ld (%ld) to %p\n", sectorNum, sectorNum >> 3, len, len >> 3, buffer);
+	FTL_Read(sectorNum >> 3, len >> 3, buffer);
 }
 
 static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
 
 }
 
-static int iphone_nand_do_bvec(struct iphone_nand_device* dev, struct page *page,
-			unsigned int len, unsigned int off, int rw,
-			sector_t sector)
+static void iphone_nand_request(struct request_queue* q)
 {
-	void *mem;
-	int err = 0;
+	struct request *req;
 
-	mem = kmap_atomic(page, KM_USER0);
-	if (rw == READ) {
-		iphone_nand_read(dev, sector, len, mem + off);
-		flush_dcache_page(page);
-	} else
-		iphone_nand_write(dev, sector, len, mem + off);
-	kunmap_atomic(mem, KM_USER0);
-
-	return err;
-}
-static int iphone_nand_make_request(struct request_queue *q, struct bio *bio)
-{
-	struct block_device* bdev = bio->bi_bdev;
-	struct iphone_nand_device* dev = bdev->bd_disk->private_data;
-	int rw;
-	struct bio_vec *bvec;
-	sector_t sector;
-	int i;
-	int err = -EIO;
-
-	sector = bio->bi_sector;
-	if (sector + (bio->bi_size >> SECTOR_SHIFT) >
-						get_capacity(bdev->bd_disk))
-		goto out;
-
-	rw = bio_rw(bio);
-	if (rw == READA)
-		rw = READ;
-
-	bio_for_each_segment(bvec, bio, i) {
-		unsigned int len = bvec->bv_len;
-		err = iphone_nand_do_bvec(dev, bvec->bv_page, len,
-					bvec->bv_offset, rw, sector);
-		if (err)
-			break;
-		sector += len >> SECTOR_SHIFT;
+	while ((req = elv_next_request(q)) != NULL)
+	{
+		if (! blk_fs_request(req))
+		{
+			end_request(req, 0);
+			continue;
+		}
+		if(rq_data_dir(req))
+		{
+			// WRITE
+			iphone_nand_write(&Device, req->sector, req->current_nr_sectors,
+					req->buffer);
+		} else {
+			// READ
+			iphone_nand_read(&Device, req->sector, req->current_nr_sectors,
+					req->buffer);
+		}
+		end_request(req, 1);
 	}
-
-out:
-	bio_endio(bio, err);
-
-	return 0;
 }
+
+static int major_num = 0;
 
 static int __init iphone_nand_init(void)
 {
-	int major_num = 0;
+	spin_lock_init(&Device.lock);
+	major_num = register_blkdev(major_num, "nand");
+
+	if(major_num <= 0)
+	{
+		printk("%s: unable to get major number\n", driver_name);
+		goto out;
+	}
 
 	nand_setup();
 	ftl_setup();
 
-	spin_lock_init(&Device.lock);
-	major_num = register_blkdev(major_num, "nand");
-
-	Device.sectorSize = 4096;
-
-	if(major_num <= 0)
-	{
-		printk("iphone_nand: unable to get major number\n");
-		goto out;
-	}
+	Device.sectorSize = Data.bytesPerPage;
 
 	Device.gd = alloc_disk(1);
 	if(!Device.gd)
@@ -1825,34 +1813,33 @@ static int __init iphone_nand_init(void)
 	Device.gd->fops = &iphone_nand_fops;
 	Device.gd->private_data = &Device;
 	strcpy(Device.gd->disk_name, "nand0");
-	Device.queue = blk_alloc_queue(GFP_KERNEL);
+	Device.queue = blk_init_queue(iphone_nand_request, &Device.lock);
 	if (!Device.queue)
-		goto out_free_queue;
+		goto out_put_disk;
 
-	blk_queue_make_request(Device.queue, iphone_nand_make_request);
-	blk_queue_max_sectors(Device.queue, 1024);
+	blk_queue_max_sectors(Device.queue, Data.sectorsPerPage);
 	blk_queue_bounce_limit(Device.queue, BLK_BOUNCE_ANY);
 	blk_queue_hardsect_size(Device.queue, Device.sectorSize);
 
 	Device.gd->queue = Device.queue;
 
-	set_capacity(Device.gd, 2048);
+	set_capacity(Device.gd, Data.pagesPerSubBlk * Data.userSubBlksTotal * (Device.sectorSize >> SECTOR_SHIFT));
 	add_disk(Device.gd);
 
-	return 0;
-
-out_free_queue:
-	blk_cleanup_queue(Device.queue);
-out_unregister:
+out_put_disk:
 	put_disk(Device.gd);
+out_unregister:
+	unregister_blkdev(major_num, "nand");
 out:
 	return -ENOMEM;
 }
 
 static void __exit iphone_nand_exit(void)
 {
-	blk_cleanup_queue(Device.queue);
+	del_gendisk(Device.gd);
 	put_disk(Device.gd);
+	blk_cleanup_queue(Device.queue);
+	unregister_blkdev(major_num, "nand");
 }
 
 module_init(iphone_nand_init);

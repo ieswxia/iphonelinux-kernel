@@ -54,7 +54,7 @@
 #include <linux/usb/gadget.h>
 #include <linux/platform_device.h>
 
-#include "clock.h"
+#include <mach/iphone-clock.h>
 #include "usb.h"
 #include <mach/usb.h>
 

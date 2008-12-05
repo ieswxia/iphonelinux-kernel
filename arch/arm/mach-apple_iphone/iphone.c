@@ -34,7 +34,7 @@
 
 #include "core.h"
 #include "lcd.h"
-#include "dma.h"
+#include <mach/iphone-dma.h>
 
 static struct map_desc iphone_io_desc[] __initdata = {
 	{
