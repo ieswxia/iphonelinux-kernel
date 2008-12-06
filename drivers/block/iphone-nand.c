@@ -1753,12 +1753,11 @@ static struct block_device_operations iphone_nand_fops = {
 };
 
 static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
-	printk("iphone_nand_read: sector %ld (%ld), len %ld (%ld) to %p\n", sectorNum, sectorNum >> 3, len, len >> 3, buffer);
-	FTL_Read(sectorNum >> 3, len >> 3, buffer);
+	FTL_Read(sectorNum / (Device.sectorSize / SECTOR_SIZE), len / (Device.sectorSize / SECTOR_SIZE), buffer);
 }
 
 static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
-
+	printk("iphone_nand_write: sector %ld (%ld), len %ld (%ld) to %p\n", sectorNum, sectorNum / (Device.sectorSize / SECTOR_SIZE), len, len / (Device.sectorSize / SECTOR_SIZE), buffer);
 }
 
 static void iphone_nand_request(struct request_queue* q)
@@ -1804,7 +1803,7 @@ static int __init iphone_nand_init(void)
 
 	Device.sectorSize = Data.bytesPerPage;
 
-	Device.gd = alloc_disk(1);
+	Device.gd = alloc_disk(5);
 	if(!Device.gd)
 		goto out_unregister;
 
@@ -1817,7 +1816,6 @@ static int __init iphone_nand_init(void)
 	if (!Device.queue)
 		goto out_put_disk;
 
-	blk_queue_max_sectors(Device.queue, Data.sectorsPerPage);
 	blk_queue_bounce_limit(Device.queue, BLK_BOUNCE_ANY);
 	blk_queue_hardsect_size(Device.queue, Device.sectorSize);
 
