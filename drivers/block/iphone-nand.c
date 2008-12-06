@@ -559,8 +559,14 @@ static int isEmptyBlock(u8* buffer, int size) {
 		return 0;
 }
 
-static int nand_read(int bank, int page, u8* buffer, u8* spare, int doECC, int checkBadBlocks) {
+static int nand_read(int direction, int bank, int page, u8* buffer, u8* spare, int doECC, int checkBadBlocks) {
 	int eccFailed;
+
+/*	if(doECC && checkBadBlocks)
+		printk("nand_read: direction=%d, bank=%d, page=%d\n", direction, bank, page);*/
+
+	if(direction)
+		return 0;
 
 	if(bank >= Data.banksTotal)
 		return ERROR_ARG;
@@ -658,11 +664,11 @@ FIL_read_error:
 	return ERROR_NAND;
 }
 
-static int nand_read_multiple(u16* bank, u32* pages, u8* main, SpareData* spare, int pagesCount) {
+static int nand_read_multiple(int direction, u16* bank, u32* pages, u8* main, SpareData* spare, int pagesCount) {
 	int i;
 	unsigned int ret;
 	for(i = 0; i < pagesCount; i++) {
-		ret = nand_read(bank[i], pages[i], main, (u8*) &spare[i], 1, 1);
+		ret = nand_read(direction, bank[i], pages[i], main, (u8*) &spare[i], 1, 1);
 		if(ret > 1)
 			return ret;
 
@@ -674,7 +680,7 @@ static int nand_read_multiple(u16* bank, u32* pages, u8* main, SpareData* spare,
 
 static int nand_read_alternate_ecc(int bank, int page, u8* buffer) {
 	int ret;
-	if((ret = nand_read(bank, page, buffer, aTemporarySBuf, 0, 1)) != 0) {
+	if((ret = nand_read(0, bank, page, buffer, aTemporarySBuf, 0, 1)) != 0) {
 		DebugPrintf("nand: Raw read failed.\r\n");
 		return ret;
 	}
@@ -875,7 +881,7 @@ static int vfl_read_page(int bank, int block, int page, u8* pageBuffer, u8* spar
 	int i;
 	memset(spareBuffer, 0, Data.bytesPerSpare);
 	for(i = 0; i < 8; i++) {
-		if(nand_read(bank, (block * Data.pagesPerBlock) + page + i, pageBuffer, spareBuffer, 1, 1) == 0) {
+		if(nand_read(0, bank, (block * Data.pagesPerBlock) + page + i, pageBuffer, spareBuffer, 1, 1) == 0) {
 			SpareData* spareData = (SpareData*) spareBuffer;
 			if(spareData->field_8 == 0 && spareData->field_9 == 0x80)
 				return 1;
@@ -950,7 +956,7 @@ static u16 virtual_block_to_physical_block(u16 virtualBank, u16 virtualBlock) {
 	return virtualBlock;
 }
 
-static int VFL_Read(u32 virtualPageNumber, u8* buffer, u8* spare, int empty_ok, int* refresh_page) {
+static int VFL_Read(int direction, u32 virtualPageNumber, u8* buffer, u8* spare, int empty_ok, int* refresh_page) {
 	u16 virtualBank;
 	u16 virtualBlock;
 	u16 virtualPage;
@@ -980,7 +986,7 @@ static int VFL_Read(u32 virtualPageNumber, u8* buffer, u8* spare, int empty_ok, 
 
 	page = physicalBlock * Data.pagesPerBlock + virtualPage;
 
-	ret = nand_read(virtualBank, page, buffer, spare, 1, 1);
+	ret = nand_read(direction, virtualBank, page, buffer, spare, 1, 1);
 
 	if(!empty_ok && ret == ERROR_EMPTYBLOCK) {
 		ret = ERROR_NAND;
@@ -995,7 +1001,7 @@ static int VFL_Read(u32 virtualPageNumber, u8* buffer, u8* spare, int empty_ok, 
 
 	if(ret == ERROR_ARG || ret == ERROR_NAND) {
 		nand_bank_reset(virtualBank, 100);
-		ret = nand_read(virtualBank, page, buffer, spare, 1, 1);
+		ret = nand_read(direction, virtualBank, page, buffer, spare, 1, 1);
 		if(!empty_ok && ret == ERROR_EMPTYBLOCK) {
 			return ERROR_NAND;
 		}
@@ -1013,11 +1019,11 @@ static int VFL_Read(u32 virtualPageNumber, u8* buffer, u8* spare, int empty_ok, 
 	return ret;
 }
 
-static int VFL_ReadMultiplePagesInVb(int logicalBlock, int logicalPage, int count, u8* main, SpareData* spare, int* refresh_page) {
+static int VFL_ReadMultiplePagesInVb(int direction, int logicalBlock, int logicalPage, int count, u8* main, SpareData* spare, int* refresh_page) {
 	int i;
 	int currentPage = logicalPage; 
 	for(i = 0; i < count; i++) {
-		int ret = VFL_Read((logicalBlock * Data.pagesPerSubBlk) + currentPage, main + (Data.bytesPerPage * i), (u8*) &spare[i], 1, refresh_page);
+		int ret = VFL_Read(direction, (logicalBlock * Data.pagesPerSubBlk) + currentPage, main + (Data.bytesPerPage * i), (u8*) &spare[i], 1, refresh_page);
 		currentPage++;
 		if(ret != 0)
 			return 0;
@@ -1025,7 +1031,7 @@ static int VFL_ReadMultiplePagesInVb(int logicalBlock, int logicalPage, int coun
 	return 1;
 }
 
-static int VFL_ReadScatteredPagesInVb(u32* virtualPageNumber, int count, u8* main, SpareData* spare, int* refresh_page) {
+static int VFL_ReadScatteredPagesInVb(int direction, u32* virtualPageNumber, int count, u8* main, SpareData* spare, int* refresh_page) {
 	int i;
 	int ret;
 	VFLData1.field_8 += count;
@@ -1047,7 +1053,7 @@ static int VFL_ReadScatteredPagesInVb(u32* virtualPageNumber, int count, u8* mai
 		ScatteredPageNumberBuffer[i] = physicalBlock * Data.pagesPerBlock + virtualPage;
 	}
 
-	ret = nand_read_multiple(ScatteredBankNumberBuffer, ScatteredPageNumberBuffer, main, spare, count);
+	ret = nand_read_multiple(direction, ScatteredBankNumberBuffer, ScatteredPageNumberBuffer, main, spare, count);
 	if(Data.field_2F <= 0 && refresh_page != NULL) {
 		printk("ftl: VFL_ReadScatteredPagesInVb mark page for refresh\r\n");
 		*refresh_page = 1;
@@ -1281,7 +1287,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 	ftlCxtBlock = 0xffff;
 	minLpn = 0xffffffff;
 	for(i = 0; i < sizeof(pstFTLCxt->thing)/sizeof(u16); i++) {
-		ret = VFL_Read(Data.pagesPerSubBlk * pstFTLCxt->thing[i], pageBuffer, spareBuffer, 1, &refreshPage);
+		ret = VFL_Read(0, Data.pagesPerSubBlk * pstFTLCxt->thing[i], pageBuffer, spareBuffer, 1, &refreshPage);
 		if(ret == ERROR_ARG) {
 			vfree(pageBuffer);
 			vfree(spareBuffer);
@@ -1312,7 +1318,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 
 	ftlCxtFound = 0;
 	for(i = Data.pagesPerSubBlk - 1; i > 0; i--) {
-		ret = VFL_Read(Data.pagesPerSubBlk * ftlCxtBlock + i, pageBuffer, spareBuffer, 1, &refreshPage);
+		ret = VFL_Read(0, Data.pagesPerSubBlk * ftlCxtBlock + i, pageBuffer, spareBuffer, 1, &refreshPage);
 		if(ret == 1) {
 			continue;
 		} else if(ret == 0 && ((SpareData*)spareBuffer)->field_9 == 0x43) {
@@ -1345,7 +1351,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 		pagesToRead++;
 
 	for(i = 0; i < pagesToRead; i++) {
-		if(VFL_Read(pstFTLCxt->pages_for_dataVbn[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0)
+		if(VFL_Read(0, pstFTLCxt->pages_for_dataVbn[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0)
 			goto FTL_Open_Error_Release;
 
 		toRead = Data.bytesPerPage;
@@ -1361,7 +1367,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 		pagesToRead++;
 
 	for(i = 0; i < pagesToRead; i++) {
-		if(VFL_Read(pstFTLCxt->pages_for_1A0[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0)
+		if(VFL_Read(0, pstFTLCxt->pages_for_1A0[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0)
 			goto FTL_Open_Error_Release;
 
 		toRead = Data.bytesPerPage;
@@ -1377,7 +1383,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 		pagesToRead++;
 
 	for(i = 0; i < pagesToRead; i++) {
-		if(VFL_Read(pstFTLCxt->pages_for_19C[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0)
+		if(VFL_Read(0, pstFTLCxt->pages_for_19C[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0)
 			goto FTL_Open_Error_Release;
 
 		toRead = Data.bytesPerPage;
@@ -1396,7 +1402,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 
 		success = 1;
 		for(i = 0; i < pagesToRead; i++) {
-			if(VFL_Read(pstFTLCxt->pages_for_3B0[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0) {
+			if(VFL_Read(0, pstFTLCxt->pages_for_3B0[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0) {
 				success = 0;
 				break;
 			}
@@ -1412,7 +1418,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 		if((pstFTLCxt->field_3D4 + 1) == 0) {
 			x = pstFTLCxt->field_3D0 / Data.pagesPerSubBlk;
 			if(x == 0 || x <= Data.userSubBlksTotal) {
-				if(VFL_Read(pstFTLCxt->field_3D0, pageBuffer, spareBuffer, 1, &refreshPage) != 0)
+				if(VFL_Read(0, pstFTLCxt->field_3D0, pageBuffer, spareBuffer, 1, &refreshPage) != 0)
 					goto FTL_Open_Error_Release;
 
 				sum_data(pageBuffer);
@@ -1470,7 +1476,7 @@ u32 FTL_map_page(FTLCxtLog* pLog, int lbn, int offset) {
 	return (pstFTLCxt->dataVbn[lbn] * Data.pagesPerSubBlk) + offset;
 }
 
-static int FTL_Read(int logicalPageNumber, int totalPagesToRead, u8* pBuf) {
+static int FTL_Read(int direction, int logicalPageNumber, int totalPagesToRead, u8* pBuf) {
 	int i;
 	int hasError = 0;
 	int lbn, offset;
@@ -1534,14 +1540,14 @@ static int FTL_Read(int logicalPageNumber, int totalPagesToRead, u8* pBuf) {
 				}
 			}
 
-			readSuccessful = VFL_ReadScatteredPagesInVb(ScatteredVirtualPageNumberBuffer, pagesToRead, pBuf + (pagesRead * Data.bytesPerPage), FTLSpareBuffer, &refreshPage);
+			readSuccessful = VFL_ReadScatteredPagesInVb(direction, ScatteredVirtualPageNumberBuffer, pagesToRead, pBuf + (pagesRead * Data.bytesPerPage), FTLSpareBuffer, &refreshPage);
 			if(refreshPage) {
 				printk("ftl: _AddLbnToRefreshList (0x%x, 0x%x, 0x%x)\r\n", lbn, pstFTLCxt->dataVbn[lbn], pLog->wVbn);
 			}
 		} else {
 			// VFL_ReadMultiplePagesInVb has a different calling convention and implementation than the equivalent iBoot function.
 			// Ours is a bit less optimized, and just calls VFL_Read for each page.
-			readSuccessful = VFL_ReadMultiplePagesInVb(pstFTLCxt->dataVbn[lbn], offset, pagesToRead, pBuf + (pagesRead * Data.bytesPerPage), FTLSpareBuffer, &refreshPage);
+			readSuccessful = VFL_ReadMultiplePagesInVb(direction, pstFTLCxt->dataVbn[lbn], offset, pagesToRead, pBuf + (pagesRead * Data.bytesPerPage), FTLSpareBuffer, &refreshPage);
 			if(refreshPage) {
 				printk("ftl: _AddLbnToRefreshList (0x%x, 0x%x)\r\n", lbn, pstFTLCxt->dataVbn[lbn]);
 			}
@@ -1573,7 +1579,7 @@ static int FTL_Read(int logicalPageNumber, int totalPagesToRead, u8* pBuf) {
 		do {
 			if(pagesRead != totalPagesToRead && Data.pagesPerSubBlk != offset) {
 				int virtualPage = FTL_map_page(pLog, lbn, offset);
-				ret = VFL_Read(virtualPage, pBuf + (Data.bytesPerPage * pagesRead), spareBuffer, 1, &refreshPage);
+				ret = VFL_Read(direction, virtualPage, pBuf + (Data.bytesPerPage * pagesRead), spareBuffer, 1, &refreshPage);
 				if(refreshPage) {
 					printk("ftl: _AddLbnToRefreshList (0x%x, 0x%x)\r\n", lbn, virtualPage / Data.pagesPerSubBlk);
 				}
@@ -1753,11 +1759,12 @@ static struct block_device_operations iphone_nand_fops = {
 };
 
 static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
-	FTL_Read(sectorNum / (Device.sectorSize / SECTOR_SIZE), len / (Device.sectorSize / SECTOR_SIZE), buffer);
+	FTL_Read(0, sectorNum / (Device.sectorSize / SECTOR_SIZE), len / (Device.sectorSize / SECTOR_SIZE), buffer);
 }
 
 static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
 	printk("iphone_nand_write: sector %ld (%ld), len %ld (%ld) to %p\n", sectorNum, sectorNum / (Device.sectorSize / SECTOR_SIZE), len, len / (Device.sectorSize / SECTOR_SIZE), buffer);
+	FTL_Read(1, sectorNum / (Device.sectorSize / SECTOR_SIZE), len / (Device.sectorSize / SECTOR_SIZE), buffer);
 }
 
 static void iphone_nand_request(struct request_queue* q)
