@@ -37,6 +37,8 @@
 #include "iphone-ftl.h"
 #include <mach/iphone-clock.h>
 #include <mach/iphone-dma.h>
+#include <mach/iphone-dma.h>
+#include <asm/setup.h>
 
 #define DebugPrintf(...)
 //#define DebugPrintf printk
@@ -75,6 +77,41 @@ static u8* aTemporaryReadEccBuf;
 static u8* aTemporarySBuf;
 
 #define SECTOR_SIZE 512
+#define ATAG_IPHONE_NAND 0x54411001
+
+typedef struct ExtentListItem {
+	uint32_t startBlock;
+	uint32_t blockCount;
+} ExtentListItem;
+
+typedef struct ExtentList {
+	uint32_t numExtents;
+	ExtentListItem extents[16];
+} ExtentList;
+
+struct atag_iphone_nand {
+	struct tag_header hdr;
+	u32             nandID;
+	u32             numBanks;
+	int             banksTable[8];
+	ExtentList      extentList;
+};
+
+static u32 TagNANDID = 0;
+static u32 TagNumBanks = 0;
+static ExtentList writeableExtents;
+
+static int __init parse_iphone_nand(const struct tag* tag)
+{
+	struct atag_iphone_nand* nand_tag = (struct atag_iphone_nand*) tag;
+	TagNANDID = nand_tag->nandID;
+	TagNumBanks = nand_tag->numBanks;
+	memcpy(banksTable, nand_tag->banksTable, sizeof(banksTable));
+	memcpy(&writeableExtents, &nand_tag->extentList, sizeof(writeableExtents));
+	return 0;
+}
+
+__tagtable(ATAG_IPHONE_NAND, parse_iphone_nand);
 
 static const NANDDeviceType SupportedDevices[] = {
 	{0x2555D5EC, 8192, 0x80, 4, 64, 4, 2, 4, 2, 7744, 4, 6},
@@ -255,60 +292,73 @@ static int nand_setup(void) {
 	iphone_clock_gate_switch(NAND_CLOCK_GATE1, 1);
 	iphone_clock_gate_switch(NAND_CLOCK_GATE2, 1);
 
-	for(bank = 0; bank < NAND_NUM_BANKS; bank++) {
-		banksTable[bank] = bank;
-	}
+	if(TagNANDID == 0)
+	{
+		for(bank = 0; bank < NAND_NUM_BANKS; bank++) {
+			banksTable[bank] = bank;
+		}
 
-	NumValidBanks = 0;
+		NumValidBanks = 0;
 
-	__raw_writel(0, NAND + NAND_SETUP);
-	__raw_writel(__raw_readl(NAND + NAND_SETUP) | (ECCType << 4), NAND + NAND_SETUP);
+		__raw_writel(0, NAND + NAND_SETUP);
+		__raw_writel(__raw_readl(NAND + NAND_SETUP) | (ECCType << 4), NAND + NAND_SETUP);
 
-	for(bank = 0; bank < NAND_NUM_BANKS; bank++) {
-		u32 id;
+		for(bank = 0; bank < NAND_NUM_BANKS; bank++) {
+			u32 id;
 
-		nand_bank_reset(bank, 100);
+			nand_bank_reset(bank, 100);
 
-		__raw_writel(NAND_CON_SETTING1, NAND + NAND_CON);
-		__raw_writel(((NANDSetting1 & NAND_CONFIG_SETTING1MASK) << NAND_CONFIG_SETTING1SHIFT) | ((NANDSetting2 & NAND_CONFIG_SETTING2MASK) << NAND_CONFIG_SETTING2SHIFT)
-				| (1 << (banksTable[bank] + 1)) | NAND_CONFIG_DEFAULTS, NAND + NAND_CONFIG);
+			__raw_writel(NAND_CON_SETTING1, NAND + NAND_CON);
+			__raw_writel(((NANDSetting1 & NAND_CONFIG_SETTING1MASK) << NAND_CONFIG_SETTING1SHIFT) | ((NANDSetting2 & NAND_CONFIG_SETTING2MASK) << NAND_CONFIG_SETTING2SHIFT)
+					| (1 << (banksTable[bank] + 1)) | NAND_CONFIG_DEFAULTS, NAND + NAND_CONFIG);
 
-		__raw_writel(NAND_CMD_ID, NAND + NAND_CMD);
+			__raw_writel(NAND_CMD_ID, NAND + NAND_CMD);
 
-		wait_for_ready(500);
+			wait_for_ready(500);
 
-		__raw_writel(0, NAND + NAND_CONFIG4);
-		__raw_writel(0, NAND + NAND_CONFIG3);
-		__raw_writel(NAND_CON_SETUPTRANSFER, NAND + NAND_CON);
+			__raw_writel(0, NAND + NAND_CONFIG4);
+			__raw_writel(0, NAND + NAND_CONFIG3);
+			__raw_writel(NAND_CON_SETUPTRANSFER, NAND + NAND_CON);
 
-		wait_for_status_bit_2(500);
-		nand_bank_reset_helper(bank, 100);
+			wait_for_status_bit_2(500);
+			nand_bank_reset_helper(bank, 100);
 
-		__raw_writel(8, NAND + NAND_TRANSFERSIZE);
-		__raw_writel(NAND_CON_BEGINTRANSFER, NAND + NAND_CON);
+			__raw_writel(8, NAND + NAND_TRANSFERSIZE);
+			__raw_writel(NAND_CON_BEGINTRANSFER, NAND + NAND_CON);
 
-		wait_for_status_bit_3(500);
-		id = __raw_readl(NAND + NAND_DMA_SOURCE);
+			wait_for_status_bit_3(500);
+			id = __raw_readl(NAND + NAND_DMA_SOURCE);
+			candidate = SupportedDevices;
+			while(candidate->id != 0) {
+				if(candidate->id == id) {
+					if(nandType == NULL) {
+						nandType = candidate;
+					} else if(nandType != candidate) {
+						printk("nand: Mismatched device IDs (0x%08x after 0x%08x)\r\n", id, nandType->id);
+						return ERROR_ARG;
+					}
+					banksTable[NumValidBanks++] = bank;
+				}
+				candidate++;
+			}
+
+			__raw_writel(NAND_CON_SETTING1, NAND + NAND_CON);
+		}
+
+		if(nandType == NULL) {
+			printk("nand: No supported NAND found\r\n");
+			return ERROR_ARG;
+		}
+	} else {
+		printk("nand: Preloading data from bootloader...\r\n");
+		NumValidBanks = TagNumBanks;
 		candidate = SupportedDevices;
 		while(candidate->id != 0) {
-			if(candidate->id == id) {
-				if(nandType == NULL) {
-					nandType = candidate;
-				} else if(nandType != candidate) {
-					printk("nand: Mismatched device IDs (0x%08x after 0x%08x)\r\n", id, nandType->id);
-					return ERROR_ARG;
-				}
-				banksTable[NumValidBanks++] = bank;
+			if(candidate->id == TagNANDID) {
+				nandType = candidate;
 			}
 			candidate++;
 		}
-
-		__raw_writel(NAND_CON_SETTING1, NAND + NAND_CON);
-	}
-
-	if(nandType == NULL) {
-		printk("nand: No supported NAND found\r\n");
-		return ERROR_ARG;
 	}
 
 	Data.DeviceID = nandType->id;
@@ -1778,7 +1828,7 @@ static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long secto
 		{
 			if((i + physSector) == entry->sectorNum)
 			{
-				//printk("read sector in cache: %u\n", physSector + i);
+				printk("read sector in cache: %u\n", physSector + i);
 				memcpy(buffer + (i * Device.sectorSize), entry->buffer, Device.sectorSize);
 				break;
 			}
@@ -1788,38 +1838,51 @@ static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long secto
 
 static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
 	struct iphone_nand_write_cache_entry* entry;
-	unsigned int i;
+	unsigned int i, j;
 	unsigned int physSector = sectorNum / (Device.sectorSize / SECTOR_SIZE);
 	unsigned int physLen = len / (Device.sectorSize / SECTOR_SIZE);
 	char* cacheBuffer = NULL;
+	int written;
 
-	printk("iphone_nand_write: sector %ld (%u), len %ld (%u) to %p\n", sectorNum, physSector, len, physLen, buffer);
+	//printk("iphone_nand_write: sector %ld (%u), len %ld (%u) to %p\n", sectorNum, physSector, len, physLen, buffer);
 	for(i = 0; i < physLen; i++)
 	{
-		list_for_each_entry(entry, &write_cache, list)
+		written = 0;
+		for(j = 0; j < writeableExtents.numExtents; j++)
 		{
-			if((i + physSector) == entry->sectorNum)
+			if(writeableExtents.extents[j].startBlock <= (physSector + i) && (physSector + i) < (writeableExtents.extents[j].startBlock + writeableExtents.extents[j].blockCount))
 			{
-				//printk("write sector in cache: %u\n", physSector + i);
-				cacheBuffer = entry->buffer;
+				printk("write sector on disk: %u\n", physSector + i);
+				FTL_Transfer(1, physSector + i, 1, buffer + (i * Device.sectorSize));
+				written = 1;
 				break;
 			}
 		}
+		if(!written) {
+			list_for_each_entry(entry, &write_cache, list)
+			{
+				if((i + physSector) == entry->sectorNum)
+				{
+					printk("write sector in cache: %u\n", physSector + i);
+					cacheBuffer = entry->buffer;
+					break;
+				}
+			}
 
-		if(!cacheBuffer)
-		{
-			entry = vmalloc(sizeof(struct iphone_nand_write_cache_entry));
-			entry->sectorNum = physSector + i;
-			entry->buffer = vmalloc(Device.sectorSize);
-			INIT_LIST_HEAD(&entry->list);
-			list_add_tail(&entry->list, &write_cache);
-			cacheBuffer = entry->buffer;
-			//printk("caching new sector in cache: %u\n", physSector + i);
+			if(!cacheBuffer)
+			{
+				entry = vmalloc(sizeof(struct iphone_nand_write_cache_entry));
+				entry->sectorNum = physSector + i;
+				entry->buffer = vmalloc(Device.sectorSize);
+				INIT_LIST_HEAD(&entry->list);
+				list_add_tail(&entry->list, &write_cache);
+				cacheBuffer = entry->buffer;
+				printk("caching new sector in cache: %u\n", physSector + i);
+			}
+
+			memcpy(cacheBuffer, buffer + (i * Device.sectorSize), Device.sectorSize);
 		}
-
-		memcpy(cacheBuffer, buffer + (i * Device.sectorSize), Device.sectorSize);
 	}
-	//FTL_Transfer(1, sectorNum / (Device.sectorSize / SECTOR_SIZE), len / (Device.sectorSize / SECTOR_SIZE), buffer);
 }
 
 static void iphone_nand_request(struct request_queue* q)
