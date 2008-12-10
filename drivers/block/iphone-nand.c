@@ -77,6 +77,9 @@ static u8* aTemporaryReadEccBuf;
 static u8* aTemporaryReadBuf;
 static u8* aTemporarySBuf;
 
+static u8* BlockDataBuffer;
+static u8* BlockOOBBuffer;
+
 #define SECTOR_SIZE 512
 #define ATAG_IPHONE_NAND 0x54411001
 
@@ -114,6 +117,18 @@ static int __init parse_iphone_nand(const struct tag* tag)
 
 __tagtable(ATAG_IPHONE_NAND, parse_iphone_nand);
 
+struct nand_write_item {
+	int bank;
+	int block;
+	int page;
+	char* data;
+	char* oob;
+	struct list_head list;
+};
+
+static struct list_head nand_write_list;
+static int pages_in_cache;
+
 static const NANDDeviceType SupportedDevices[] = {
 	{0x2555D5EC, 8192, 0x80, 4, 64, 4, 2, 4, 2, 7744, 4, 6},
 	{0xB614D5EC, 4096, 0x80, 8, 128, 4, 2, 4, 2, 3872, 4, 6},
@@ -129,6 +144,8 @@ static const NANDDeviceType SupportedDevices[] = {
 	{0x3E94D52C, 4096, 0x80, 8, 216, 4, 2, 4, 2, 3872, 8, 8},
 	{0}
 };
+
+static int nand_flush(void);
 
 static int wait_for_ready(int timeout) {
 	u64 startTime;
@@ -303,6 +320,8 @@ static int nand_setup(void) {
 	if(HasNANDInit)
 		return 0;
 
+	INIT_LIST_HEAD(&nand_write_list);
+
 	NANDSetting1 = 7;
 	NANDSetting2 = 7;
 	NANDSetting3 = 7;
@@ -475,6 +494,9 @@ static int nand_setup(void) {
 	memset(aTemporaryReadEccBuf, 0xFF, Data.bytesPerPage);
 
 	aTemporarySBuf = (u8*) kmalloc(Data.bytesPerSpare, GFP_KERNEL);
+
+	BlockDataBuffer = (u8*) kmalloc(Data.bytesPerPage * Data.pagesPerBlock, GFP_KERNEL);
+	BlockOOBBuffer = (u8*) kmalloc(Data.bytesPerSpare * Data.pagesPerBlock, GFP_KERNEL);
 
 	HasNANDInit = 1;
 
@@ -774,12 +796,84 @@ FIL_erase_error:
 
 static int nand_read(int direction, int bank, int page, u8* buffer, u8* spare, int doECC, int checkBadBlocks) {
 	int eccFailed;
+	struct nand_write_item* entry;
 
 /*	if(doECC && checkBadBlocks)
 		printk("nand_read: direction=%d, bank=%d, page=%d\n", direction, bank, page);*/
 
 	if(direction)
+	{
+		int block = page / Data.pagesPerBlock;
+		struct nand_write_item* newEntry;
+		struct list_head* addBefore;
+		int written = 0;
+
+		addBefore = &nand_write_list;
+		list_for_each_entry(entry, &nand_write_list, list)
+		{
+			if(bank == entry->bank && page == entry->page)
+			{
+				if(buffer) 
+				{
+					if(!entry->data)
+					{
+						entry->data = vmalloc(Data.bytesPerPage);
+					}
+					memcpy(entry->data, buffer, Data.bytesPerPage);
+				}
+				if(spare) 
+				{
+					if(!entry->oob)
+					{
+						entry->oob = vmalloc(Data.bytesPerSpare);
+					}
+					memcpy(entry->oob, spare, Data.bytesPerSpare);
+				}
+				written = 1;
+				break;
+			}
+			if(bank == entry->bank && block == entry->block)
+			{
+				addBefore = &entry->list;
+			}
+		}
+
+
+		if(!written) 
+		{
+			pages_in_cache++;
+			newEntry = vmalloc(sizeof(struct nand_write_item));
+			newEntry->bank = bank;
+			newEntry->block = block;
+			newEntry->page = page;
+
+			if(buffer) 
+			{
+				newEntry->data = vmalloc(Data.bytesPerPage);
+				memcpy(newEntry->data, buffer, Data.bytesPerPage);
+			} else {
+				newEntry->data = NULL;
+			}
+
+			if(spare)
+			{
+				newEntry->oob = vmalloc(Data.bytesPerSpare);
+				memcpy(newEntry->oob, spare, Data.bytesPerSpare);
+			} else {
+				newEntry->oob = NULL;
+			}
+
+			INIT_LIST_HEAD(&newEntry->list);
+
+			list_add_tail(&newEntry->list, addBefore);
+		}
+
+		if(pages_in_cache > 1024) {
+			nand_flush();
+		}
+
 		return 0;
+	}
 
 	if(bank >= Data.banksTotal)
 		return ERROR_ARG;
@@ -960,6 +1054,66 @@ static int nand_write(int bank, int page, uint8_t* buffer, uint8_t* spare, int d
 FIL_write_error:
 	nand_bank_reset(bank, 100);
 	return ERROR_NAND;
+}
+
+static int nand_flush(void)
+{
+	int curBank = -1;
+	int curBlock = -1;
+	struct nand_write_item* entry;
+	struct list_head* pos;
+	struct list_head* temp;
+	int i, pageOffset;
+
+	printk("%s: nand_flush() - %d\n", driver_name, pages_in_cache);
+	list_for_each_safe(pos, temp, &nand_write_list)
+	{
+		entry = list_entry(pos, struct nand_write_item, list);
+
+		if(curBank != entry->bank && curBlock != entry->block)
+		{
+			if(curBank != -1 && curBlock != -1)
+			{
+				nand_erase(curBank, curBlock);
+				for(i = 0; i < Data.pagesPerBlock; i++)
+				{
+					nand_write(curBank, (curBlock * Data.bytesPerPage) + i, BlockDataBuffer + (i * Data.bytesPerPage), BlockOOBBuffer + (i * Data.bytesPerSpare), 1);
+				}
+			}
+
+			curBank = entry->bank;
+			curBlock = entry->block;
+			//printk("%s: bank = %d, block = %d\n", driver_name, curBank, curBlock);
+			for(i = 0; i < Data.pagesPerBlock; i++)
+			{
+				nand_read(0, curBank, (curBlock * Data.bytesPerPage) + i, BlockDataBuffer + (i * Data.bytesPerPage), BlockOOBBuffer + (i * Data.bytesPerSpare), 1, 1);
+			}
+		}
+
+		pageOffset = entry->page - (entry->block * Data.pagesPerBlock);
+		//printk("%s: \tpage: %d (%d)\n", driver_name, entry->page, pageOffset);
+
+		list_del_init(&entry->list);
+
+		if(entry->data)
+		{
+			memcpy(BlockDataBuffer + (pageOffset  * Data.bytesPerPage), entry->data, Data.bytesPerPage);
+			vfree(entry->data);
+		}
+
+		if(entry->oob)
+		{
+			memcpy(BlockOOBBuffer + (pageOffset * Data.bytesPerSpare), entry->oob, Data.bytesPerSpare);
+			vfree(entry->oob);
+		}
+
+		vfree(entry);
+
+		pages_in_cache--;
+	}
+
+	return 0;
+
 }
 
 static int nand_transfer_multiple(int direction, u16* bank, u32* pages, u8* main, SpareData* spare, int pagesCount) {
@@ -2043,35 +2197,38 @@ static struct iphone_nand_device {
 	int sectorSize;
 } Device;
 
-static int iphone_nand_ioctl(struct block_device *bdev, fmode_t mode,
-			unsigned int cmd, unsigned long arg)
+static int iphone_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 {
 	long size;
-	struct hd_geometry geo;
 
-	switch(cmd) {
-		/*
-		 * The only command we need to interpret is HDIO_GETGEO, since
-		 * we can't partition the drive otherwise.  We have no real
-		 * geometry, of course, so make something up.
-		 */
-		case HDIO_GETGEO:
-			size = Data.pagesPerSubBlk * Data.userSubBlksTotal * (Device.sectorSize >> SECTOR_SHIFT);
-			geo.cylinders = (size & ~0x3f) >> 6;
-			geo.heads = 4;
-			geo.sectors = 16;
-			geo.start = 4;
-			if (copy_to_user((void *) arg, &geo, sizeof(geo)))
-				return -EFAULT;
-			return 0;
-	}
+	size = Data.pagesPerSubBlk * Data.userSubBlksTotal * (Device.sectorSize >> SECTOR_SHIFT);
 
-	return -ENOTTY;
+	geo->heads     = 64;
+	geo->sectors   = 32;
+	geo->cylinders = size / (geo->heads * geo->sectors);
+
+	return 0;
+}
+
+static int iphone_blk_open(struct block_device *bdev, fmode_t mode)
+{
+	return 0;
+}
+
+static int iphone_blk_release(struct gendisk *disk, fmode_t mode)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&Device.lock, flags);
+	nand_flush();
+	spin_unlock_irqrestore(&Device.lock, flags);
+	return 0;
 }
 
 static struct block_device_operations iphone_nand_fops = {
 	.owner =		THIS_MODULE,
-	.locked_ioctl =		iphone_nand_ioctl,
+	.getgeo	= 		iphone_getgeo,
+	.open =			iphone_blk_open,
+	.release =		iphone_blk_release,
 };
 
 struct iphone_nand_write_cache_entry {
@@ -2107,15 +2264,16 @@ static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long secto
 }
 
 static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
-	struct iphone_nand_write_cache_entry* entry;
-	unsigned int i, j;
+	//struct iphone_nand_write_cache_entry* entry;
+	//unsigned int i, j;
 	unsigned int physSector = sectorNum / (Device.sectorSize / SECTOR_SIZE);
 	unsigned int physLen = len / (Device.sectorSize / SECTOR_SIZE);
-	char* cacheBuffer = NULL;
-	int written;
+	/*char* cacheBuffer = NULL;
+	int written;*/
 
+	FTL_Transfer(1, physSector, physLen, buffer);
 	//printk("iphone_nand_write: sector %ld (%u), len %ld (%u) to %p\n", sectorNum, physSector, len, physLen, buffer);
-	for(i = 0; i < physLen; i++)
+	/*for(i = 0; i < physLen; i++)
 	{
 		written = 0;
 		for(j = 0; j < writeableExtents.numExtents; j++)
@@ -2152,7 +2310,7 @@ static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sect
 
 			memcpy(cacheBuffer, buffer + (i * Device.sectorSize), Device.sectorSize);
 		}
-	}
+	}*/
 }
 
 static void iphone_nand_request(struct request_queue* q)
