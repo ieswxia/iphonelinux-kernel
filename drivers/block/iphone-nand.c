@@ -74,6 +74,7 @@ static NANDData Data;
 static UnknownNANDType Data2;
 
 static u8* aTemporaryReadEccBuf;
+static u8* aTemporaryReadBuf;
 static u8* aTemporarySBuf;
 
 #define SECTOR_SIZE 512
@@ -146,7 +147,7 @@ static int wait_for_ready(int timeout) {
 	return 0;
 }
 
-static int wait_for_status_bit_2(int timeout) {
+static int wait_for_address_complete(int timeout) {
 	u64 startTime;
 
 	if((__raw_readl(NAND + NAND_STATUS) & (1 << 2)) != 0) {
@@ -184,6 +185,26 @@ static int wait_for_status_bit_3(int timeout) {
 	__raw_writel(1 << 3, NAND + NAND_STATUS);
 
 	return 0;
+}
+
+static int nand_read_status(void)
+{
+	int status;
+
+	__raw_writel(__raw_readl(NAND + NAND_CONFIG6) & ~(1 << 4), NAND + NAND_CONFIG6);
+	__raw_writel(0x7E0, NAND + NAND_CON);
+	__raw_writel(NAND_CMD_READSTATUS, NAND + NAND_CMD);
+	__raw_writel(0, NAND + NAND_TRANSFERSIZE);
+	__raw_writel(0x7E2, NAND + NAND_CON);
+
+	wait_for_status_bit_3(500);
+
+	status = __raw_readl(NAND + NAND_DMA_SOURCE);
+	__raw_writel(0x7E0, NAND + NAND_CON);
+	__raw_writel(1 << 3, NAND + NAND_STATUS);
+	__raw_writel(__raw_readl(NAND + NAND_CONFIG6) | (1 << 2), NAND + NAND_CONFIG6);
+
+	return status;
 }
 
 static int nand_bank_reset_helper(int bank, int timeout) {
@@ -320,7 +341,7 @@ static int nand_setup(void) {
 			__raw_writel(0, NAND + NAND_CONFIG3);
 			__raw_writel(NAND_CON_ADDRESSDONE, NAND + NAND_CON);
 
-			wait_for_status_bit_2(500);
+			wait_for_address_complete(500);
 			nand_bank_reset_helper(bank, 100);
 
 			__raw_writel(8, NAND + NAND_TRANSFERSIZE);
@@ -450,6 +471,7 @@ static int nand_setup(void) {
 	printk("nand: BYTES_PER_PAGE: %d\r\n", Data.bytesPerPage);
 
 	aTemporaryReadEccBuf = (u8*) kmalloc(Data.bytesPerPage, GFP_KERNEL);
+	aTemporaryReadBuf = (u8*) kmalloc(Data.bytesPerPage, GFP_KERNEL);
 	memset(aTemporaryReadEccBuf, 0xFF, Data.bytesPerPage);
 
 	aTemporarySBuf = (u8*) kmalloc(Data.bytesPerSpare, GFP_KERNEL);
@@ -494,6 +516,41 @@ static int transferFromFlash(void* buffer, int size) {
 	return 0;
 }
 
+static int transferToFlash(void* buffer, int size) {
+	int controller = 0;
+	int channel = 0;
+
+	if((((uint32_t)buffer) & 0x3) != 0) {
+		// the buffer needs to be aligned for DMA, last two bits have to be clear
+		return ERROR_ALIGN;
+	}
+
+	__raw_writel(__raw_readl(NAND + NAND_CONFIG) | (1 << NAND_CONFIG_DMASETTINGSHIFT), NAND + NAND_CONFIG);
+	__raw_writel(size - 1, NAND + NAND_TRANSFERSIZE);
+	__raw_writel(0x7F4, NAND + NAND_CON);
+
+	dmac_clean_range(buffer, (u8*)buffer + size);
+
+	iphone_dma_request(IPHONE_DMA_MEMORY, 4, 4, IPHONE_DMA_NAND, 4, 4, &controller, &channel);
+	iphone_dma_perform((uint32_t)buffer, IPHONE_DMA_NAND, size, 0, &controller, &channel);
+
+	if(iphone_dma_finish(controller, channel, 500) != 0) {
+		printk("nand: dma timed out\r\n");
+		return ERROR_TIMEOUT;
+	}
+
+	if(wait_for_status_bit_3(500) != 0) {
+		printk("nand: waiting for status bit 3 timed out\r\n");
+		return ERROR_TIMEOUT;
+	}
+
+	__raw_writel(NAND_CON_SETTING1, NAND + NAND_CON);
+
+	dmac_flush_range(buffer, (u8*)buffer + size);
+
+	return 0;
+}
+
 static void ecc_perform(int setting, int sectors, u8* sectorData, u8* eccData) {
 	dmac_flush_range(sectorData, (u8*)sectorData + (sectors * SECTOR_SIZE));
 	dmac_flush_range(eccData, (u8*)eccData + (sectors * 20));
@@ -507,6 +564,18 @@ static void ecc_perform(int setting, int sectors, u8* sectorData, u8* eccData) {
 	dmac_clean_range(eccData, (u8*)eccData + (sectors * 20));
 
 	__raw_writel(1, NANDECC + NANDECC_START);
+}
+
+static void ecc_generate(int setting, int sectors, uint8_t* sectorData, uint8_t* eccData) {
+	__raw_writel(1, NANDECC + NANDECC_CLEARINT);
+	__raw_writel(((sectors - 1) & 0x3) | setting, NANDECC + NANDECC_SETUP);
+	__raw_writel((uint32_t) sectorData, NANDECC + NANDECC_DATA);
+	__raw_writel((uint32_t) eccData, NANDECC + NANDECC_ECC);
+
+	dmac_flush_range(sectorData, (u8*)sectorData + (sectors * SECTOR_SIZE));
+	dmac_flush_range(eccData, (u8*)eccData + (sectors * 20));
+
+	__raw_writel(2, NANDECC + NANDECC_START);
 }
 
 #define VIC1 IO_ADDRESS(0x38E01000)
@@ -537,6 +606,59 @@ static int ecc_finish(void) {
 
 	if((__raw_readl(NANDECC + NANDECC_STATUS) & 0x1) != 0)
 		return ERROR_ECC;
+
+	return 0;
+}
+
+static int generateECC(int setting, uint8_t* data, uint8_t* ecc) {
+	int eccSize = 0;
+	uint8_t* dataPtr = data;
+	uint8_t* eccPtr = ecc;
+	int sectorsLeft = Data.sectorsPerPage;
+
+	if(setting == 4) {
+		eccSize = 15;
+	} else if(setting == 8) {
+		eccSize = 20;
+	} else if(setting == 0) {
+		eccSize = 10;
+	} else {
+		return ERROR_ECC;
+	}
+
+	while(sectorsLeft > 0) {
+		int toCheck;
+		if(sectorsLeft > 4)
+			toCheck = 4;
+		else
+			toCheck = sectorsLeft;
+
+		ecc_generate(setting, toCheck, dataPtr, eccPtr);
+		if(ecc_finish() != 0)
+			return ERROR_ECC;
+
+		if(LargePages) {
+			// If there are more than 4 sectors in a page...
+			int i;
+			for(i = 0; i < toCheck; i++) {
+				// loop through each sector that we have generated this time's ECC
+				uint8_t* x = &eccPtr[eccSize * i]; // first byte of ECC
+				uint8_t* y = x + eccSize - 1; // last byte of ECC
+				while(x < y) {
+					// swap the byte order of them
+					uint8_t t = *y;
+					*y = *x;
+					*x = t;
+					x++;
+					y--;
+				}
+			}
+		}
+
+		dataPtr += toCheck * SECTOR_SIZE;
+		eccPtr += toCheck * eccSize;
+		sectorsLeft -= toCheck;
+	}
 
 	return 0;
 }
@@ -609,6 +731,47 @@ static int isEmptyBlock(u8* buffer, int size) {
 		return 0;
 }
 
+static int nand_erase(int bank, int block) {
+	int pageAddr;
+
+	if(bank >= Data.banksTotal)
+		return ERROR_ARG;
+
+	if(block >= Data.blocksPerBank)
+		return ERROR_ARG;
+
+	pageAddr = block * Data.pagesPerBlock;
+
+	__raw_writel(((NANDSetting1 & NAND_CONFIG_SETTING1MASK) << NAND_CONFIG_SETTING1SHIFT) | ((NANDSetting2 & NAND_CONFIG_SETTING2MASK) << NAND_CONFIG_SETTING2SHIFT)
+		| (1 << (banksTable[bank] + 1)) | NAND_CONFIG_DEFAULTS, NAND + NAND_CONFIG);
+
+	__raw_writel(0x7E0, NAND + NAND_CON);
+	__raw_writel(0x60, NAND + NAND_CMD);
+
+	__raw_writel(2, NAND + NAND_CONFIG4);
+	__raw_writel(pageAddr, NAND + NAND_CONFIG3);
+	__raw_writel(NAND_CON_ADDRESSDONE, NAND + NAND_CON);
+
+	if(wait_for_address_complete(500) != 0) {
+		printk("nand (nand_erase): wait for address complete failed\r\n");
+		goto FIL_erase_error;
+	}
+
+	__raw_writel(0xD0, NAND + NAND_CMD);
+	wait_for_ready(500);
+
+	while((nand_read_status() & (1 << 6)) == 0);
+
+	if(nand_read_status() & 0x1)
+		return -1;
+	else
+		return 0;
+
+FIL_erase_error:
+	return -1;
+
+}
+
 static int nand_read(int direction, int bank, int page, u8* buffer, u8* spare, int doECC, int checkBadBlocks) {
 	int eccFailed;
 
@@ -648,7 +811,7 @@ static int nand_read(int direction, int bank, int page, u8* buffer, u8* spare, i
 	}
 
 	__raw_writel(NAND_CON_ADDRESSDONE, NAND + NAND_CON);
-	if(wait_for_status_bit_2(500) != 0) {
+	if(wait_for_address_complete(500) != 0) {
 		printk("nand: setup transfer failed\r\n");
 		goto FIL_read_error;
 	}
@@ -710,6 +873,91 @@ static int nand_read(int direction, int bank, int page, u8* buffer, u8* spare, i
 
 FIL_read_error:
 	printk("nand: some sort of read error\n");
+	nand_bank_reset(bank, 100);
+	return ERROR_NAND;
+}
+
+static int nand_write(int bank, int page, uint8_t* buffer, uint8_t* spare, int doECC) {
+	if(bank >= Data.banksTotal)
+		return ERROR_ARG;
+
+	if(page >= Data.pagesPerBank)
+		return ERROR_ARG;
+
+	if(buffer == NULL && spare == NULL)
+		return ERROR_ARG;
+
+	memcpy(aTemporaryReadBuf, buffer, Data.bytesPerPage);
+
+	if(doECC) {
+		memcpy(aTemporarySBuf, spare, sizeof(SpareData));
+		if(generateECC(ECCType, aTemporaryReadBuf, aTemporarySBuf + sizeof(SpareData)) != 0) {
+			printk("nand: Unexpected error during ECC generation\r\n");
+			return ERROR_ARG;
+		}
+
+		memset(aTemporaryReadEccBuf, 0xFF, SECTOR_SIZE);
+		memcpy(aTemporaryReadEccBuf, spare, sizeof(SpareData));
+
+		ecc_generate(ECCType, 1, aTemporaryReadEccBuf, aTemporarySBuf + sizeof(SpareData) + TotalECCDataSize);
+		if(ecc_finish() != 0) {
+			memset(aTemporaryReadEccBuf, 0xFF, SECTOR_SIZE);
+			printk("nand: Unexpected error during ECC generation\r\n");
+			return ERROR_ARG;
+		}
+	}
+
+	__raw_writel(((NANDSetting1 & NAND_CONFIG_SETTING1MASK) << NAND_CONFIG_SETTING1SHIFT) | ((NANDSetting2 & NAND_CONFIG_SETTING2MASK) << NAND_CONFIG_SETTING2SHIFT)
+		| (1 << (banksTable[bank] + 1)) | NAND_CONFIG_DEFAULTS, NAND + NAND_CONFIG);
+
+	__raw_writel(0x80, NAND + NAND_CMD);
+	if(wait_for_ready(500) != 0) {
+		printk("nand: bank setting failed\r\n");
+		goto FIL_write_error;
+	}
+
+	__raw_writel(NAND_CONFIG4_TRANSFERSETTING, NAND + NAND_CONFIG4);
+
+	if(buffer) {
+		__raw_writel(page << 16, NAND + NAND_CONFIG3); // lower bits of the page number to the upper bits of CONFIG3
+		__raw_writel((page >> 16) & 0xFF, NAND + NAND_CONFIG5); // upper bits of the page number
+	} else {
+		__raw_writel((page << 16) | Data.bytesPerPage, NAND + NAND_CONFIG3); // lower bits of the page number to the upper bits of CONFIG3
+		__raw_writel((page >> 16) & 0xFF, NAND + NAND_CONFIG5); // upper bits of the page number	
+	}
+
+	__raw_writel(NAND_CON_ADDRESSDONE, NAND + NAND_CON);
+	if(wait_for_address_complete(500) != 0) {
+		printk("nand: setup transfer failed\r\n");
+		goto FIL_write_error;
+	}
+
+	if(buffer) {
+		if(transferToFlash(aTemporaryReadBuf, Data.bytesPerPage) != 0) {
+			printk("nand: transferToFlash failed\r\n");
+			goto FIL_write_error;
+		}
+	}
+
+	if(transferToFlash(aTemporarySBuf, Data.bytesPerSpare) != 0) {
+		printk("nand: transferToFlash for spare failed\r\n");
+		goto FIL_write_error;
+	}
+
+	__raw_writel(0x10, NAND + NAND_CMD);
+
+	wait_for_ready(500);
+
+	while((nand_read_status() & (1 << 6)) == 0);
+
+	if(nand_read_status() & 0x1)
+		return -1;
+	else
+		return 0;
+
+	return 0;
+
+FIL_write_error:
 	nand_bank_reset(bank, 100);
 	return ERROR_NAND;
 }
@@ -1004,6 +1252,22 @@ static u16 virtual_block_to_physical_block(u16 virtualBank, u16 virtualBlock) {
 	}
 
 	return virtualBlock;
+}
+
+static int VFL_Erase(uint16_t block) {
+	uint16_t physicalBlock;
+	int ret;
+	int bank;
+
+	for(bank = 0; bank < Data.banksTotal; bank++) {
+		physicalBlock = virtual_block_to_physical_block(bank, block + Data2.field_4);
+		ret = nand_erase(bank, physicalBlock);
+		if(ret) {
+			return ret;
+		}
+	}
+
+	return 0;
 }
 
 static int VFL_Transfer(int direction, u32 virtualPageNumber, u8* buffer, u8* spare, int empty_ok, int* refresh_page) {
