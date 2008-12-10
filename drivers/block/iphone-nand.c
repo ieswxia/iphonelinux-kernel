@@ -1821,7 +1821,7 @@ static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long secto
 	unsigned int physSector = sectorNum / (Device.sectorSize / SECTOR_SIZE);
 	unsigned int physLen = len / (Device.sectorSize / SECTOR_SIZE);
 
-	FTL_Transfer(0, physSector, physLen, buffer);
+	int read = 0;
 	for(i = 0; i < physLen; i++)
 	{
 		list_for_each_entry(entry, &write_cache, list)
@@ -1830,9 +1830,13 @@ static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long secto
 			{
 				printk("read sector in cache: %u\n", physSector + i);
 				memcpy(buffer + (i * Device.sectorSize), entry->buffer, Device.sectorSize);
+				read = 1;
 				break;
 			}
 		}
+
+		if(!read)
+			FTL_Transfer(0, physSector + i, 1, buffer + (i * Device.sectorSize));
 	}
 }
 
