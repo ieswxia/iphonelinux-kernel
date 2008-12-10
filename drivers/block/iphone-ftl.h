@@ -20,12 +20,12 @@ typedef struct VFLCxt {
 
 typedef struct FTLCxtLog {
 	void* field_0;					// 0x0
-	u16 wVbn;					// 0x4
-	u16 field_6;				// 0x6
-	u16* field_8;				// 0x8
-	u16 field_C;				// 0xC
-	u16 field_E;				// 0xE
-	u32 field_10;				// 0x10
+	uint16_t wVbn;					// 0x4
+	uint16_t wLbn;					// 0x6
+	uint16_t* wPageOffsets;				// 0x8
+	uint16_t field_C;				// 0xC
+	uint16_t field_E;				// 0xE
+	uint32_t field_10;				// 0x10
 } FTLCxtLog;
 
 typedef struct FTLCxtElement2 {
@@ -34,28 +34,35 @@ typedef struct FTLCxtElement2 {
 } FTLCxtElement2;
 
 typedef struct FTLCxt {
-	u8 unk1[0x38];				// 0x0
-	u32 pages_for_dataVbn[18];			// 0x38
-	u32 pages_for_19C[36];			// 0x80
-	u32 pages_for_1A0[34];			// 0x110
-	u16* dataVbn;				// 0x198
-	u16* field_19C;				// 0x19C
-	u16* field_1A0;				// 0x1A0
+	uint32_t unk0;					// 0x0
+	uint32_t unk1;					// 0x4
+	uint16_t wNumOfFreeVb;				// 0x8
+	uint16_t wUnk2;					// 0xA
+	uint16_t wUnk3;					// 0xC
+	uint16_t awUnkBlockList1[4];			// 0xE
+	uint16_t awFreeVb[10];				// 0x16
+	uint16_t awUnkBlockList2[7];			// 0x2A
+	uint32_t pages_for_pawMapTable[18];		// 0x38
+	uint32_t pages_for_pawEraseCounterTable[36];	// 0x80
+	uint32_t pages_for_wPageOffsets[34];		// 0x110
+	uint16_t* pawMapTable;				// 0x198
+	uint16_t* pawEraseCounterTable;			// 0x19C
+	uint16_t* wPageOffsets;				// 0x1A0
 	FTLCxtLog pLog[18];				// 0x1A4
-	u8 unk2[6];				// 0x30C
-	u16 thing[3];				// 0x312
-	u32 field_318;				// 0x318
-	u32 field_31C;				// 0x31C
-	u32 pages_for_3B0[36];			// 0x320
-	u16* field_3B0;				// 0x3B0
+	uint8_t unk2[6];				// 0x30C
+	uint16_t thing[3];				// 0x312
+	uint32_t field_318;				// 0x318
+	uint32_t field_31C;				// 0x31C
+	uint32_t pages_for_pawReadCounterTable[36];	// 0x320
+	uint16_t* pawReadCounterTable;			// 0x3B0
 	FTLCxtElement2 elements2[5];			// 0x3B4
-	u32 field_3C8;				// 0x3C8
-	u32 field_3CC;				// 0x3CC
-	u32 field_3D0;				// 0x3D0
-	u32 field_3D4;				// 0x3D4
-	u8 field_3D8[0x420];			// 0x3D8
-	u32 versionLower;				// 0x7F8
-	u32 versionUpper;				// 0x7FC
+	uint32_t field_3C8;				// 0x3C8
+	uint32_t field_3CC;				// 0x3CC
+	uint32_t field_3D0;				// 0x3D0
+	uint32_t field_3D4;				// 0x3D4
+	uint8_t field_3D8[0x420];			// 0x3D8
+	uint32_t versionLower;				// 0x7F8
+	uint32_t versionUpper;				// 0x7FC
 } FTLCxt;
 
 typedef struct VFLData1Type {
