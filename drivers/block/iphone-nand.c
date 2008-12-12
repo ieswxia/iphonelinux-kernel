@@ -108,10 +108,18 @@ static ExtentList writeableExtents;
 static int __init parse_iphone_nand(const struct tag* tag)
 {
 	struct atag_iphone_nand* nand_tag = (struct atag_iphone_nand*) tag;
+	int i;
+
 	TagNANDID = nand_tag->nandID;
 	TagNumBanks = nand_tag->numBanks;
 	memcpy(banksTable, nand_tag->banksTable, sizeof(banksTable));
 	memcpy(&writeableExtents, &nand_tag->extentList, sizeof(writeableExtents));
+	
+	for(i = 0; i < writeableExtents.numExtents; i++)
+	{
+		printk("%s: writeable extent: %d - %d\n", driver_name, writeableExtents.extents[i].startBlock, writeableExtents.extents[i].startBlock + writeableExtents.extents[i].blockCount);
+	}
+
 	return 0;
 }
 
@@ -589,15 +597,21 @@ static void ecc_perform(int setting, int sectors, u8* sectorData, u8* eccData) {
 }
 
 static void ecc_generate(int setting, int sectors, uint8_t* sectorData, uint8_t* eccData) {
+	dmac_flush_range(sectorData, (u8*)sectorData + (sectors * SECTOR_SIZE));
+	dmac_flush_range(eccData, (u8*)eccData + (sectors * 20));
+
 	__raw_writel(1, NANDECC + NANDECC_CLEARINT);
 	__raw_writel(((sectors - 1) & 0x3) | setting, NANDECC + NANDECC_SETUP);
-	__raw_writel((uint32_t) sectorData, NANDECC + NANDECC_DATA);
-	__raw_writel((uint32_t) eccData, NANDECC + NANDECC_ECC);
+	__raw_writel(virt_to_phys(sectorData), NANDECC + NANDECC_DATA);
+	__raw_writel(virt_to_phys(eccData), NANDECC + NANDECC_ECC);
 
 	dmac_flush_range(sectorData, (u8*)sectorData + (sectors * SECTOR_SIZE));
 	dmac_flush_range(eccData, (u8*)eccData + (sectors * 20));
 
 	__raw_writel(2, NANDECC + NANDECC_START);
+
+	// not sure why this udelay is necessary (it's not in openiboot), but it is or ECC status never changes.
+	udelay(1);
 }
 
 #define VIC1 IO_ADDRESS(0x38E01000)
@@ -626,7 +640,8 @@ static int ecc_finish(void) {
 	if((ret = wait_for_ecc_interrupt(500)) != 0)
 		return ret;
 
-	if((__raw_readl(NANDECC + NANDECC_STATUS) & 0x1) != 0)
+	flush_cache_all();
+	if(((ret = __raw_readl(NANDECC + NANDECC_STATUS)) & 0x1) != 0)
 		return ERROR_ECC;
 
 	return 0;
@@ -650,14 +665,18 @@ static int generateECC(int setting, uint8_t* data, uint8_t* ecc) {
 
 	while(sectorsLeft > 0) {
 		int toCheck;
+		int ret;
 		if(sectorsLeft > 4)
 			toCheck = 4;
 		else
 			toCheck = sectorsLeft;
 
 		ecc_generate(setting, toCheck, dataPtr, eccPtr);
-		if(ecc_finish() != 0)
+		if((ret = ecc_finish()) != 0)
+		{
+			printk("error with ecc_finish during ecc_generate: %d\n", ret);
 			return ERROR_ECC;
+		}
 
 		if(LargePages) {
 			// If there are more than 4 sectors in a page...
@@ -996,7 +1015,7 @@ static int nand_write(int bank, int page, uint8_t* buffer, uint8_t* spare, int d
 		ecc_generate(ECCType, 1, aTemporaryReadEccBuf, aTemporarySBuf + sizeof(SpareData) + TotalECCDataSize);
 		if(ecc_finish() != 0) {
 			memset(aTemporaryReadEccBuf, 0xFF, SECTOR_SIZE);
-			printk("nand: Unexpected error during ECC generation\r\n");
+			printk("nand: Unexpected error during ECC generation of spare\r\n");
 			return ERROR_ARG;
 		}
 	}
@@ -1074,10 +1093,11 @@ static int nand_flush(void)
 		{
 			if(curBank != -1 && curBlock != -1)
 			{
+				printk("nand_erase: %d, %d\n", curBank, curBlock);
 				nand_erase(curBank, curBlock);
 				for(i = 0; i < Data.pagesPerBlock; i++)
 				{
-					nand_write(curBank, (curBlock * Data.bytesPerPage) + i, BlockDataBuffer + (i * Data.bytesPerPage), BlockOOBBuffer + (i * Data.bytesPerSpare), 1);
+					nand_write(curBank, (curBlock * Data.pagesPerBlock) + i, BlockDataBuffer + (i * Data.bytesPerPage), BlockOOBBuffer + (i * Data.bytesPerSpare), 1);
 				}
 			}
 
@@ -1086,7 +1106,7 @@ static int nand_flush(void)
 			//printk("%s: bank = %d, block = %d\n", driver_name, curBank, curBlock);
 			for(i = 0; i < Data.pagesPerBlock; i++)
 			{
-				nand_read(0, curBank, (curBlock * Data.bytesPerPage) + i, BlockDataBuffer + (i * Data.bytesPerPage), BlockOOBBuffer + (i * Data.bytesPerSpare), 1, 1);
+				nand_read(0, curBank, (curBlock * Data.pagesPerBlock) + i, BlockDataBuffer + (i * Data.bytesPerPage), BlockOOBBuffer + (i * Data.bytesPerSpare), 1, 1);
 			}
 		}
 
@@ -1110,6 +1130,15 @@ static int nand_flush(void)
 		vfree(entry);
 
 		pages_in_cache--;
+	}
+
+	if(curBank != -1 && curBlock != -1)
+	{
+		nand_erase(curBank, curBlock);
+		for(i = 0; i < Data.pagesPerBlock; i++)
+		{
+			nand_write(curBank, (curBlock * Data.pagesPerBlock) + i, BlockDataBuffer + (i * Data.bytesPerPage), BlockOOBBuffer + (i * Data.bytesPerSpare), 1);
+		}
 	}
 
 	return 0;
@@ -2272,6 +2301,24 @@ static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sect
 	int written;*/
 
 	FTL_Transfer(1, physSector, physLen, buffer);
+	
+	/*
+	for(i = 0; i < physLen; i++)
+	{
+		for(j = 0; j < writeableExtents.numExtents; j++)
+		{
+			if(writeableExtents.extents[j].startBlock <= (physSector + i) && (physSector + i) < (writeableExtents.extents[j].startBlock + writeableExtents.extents[j].blockCount))
+			{
+				printk("in writeable extent: %d %d %d\n", physSector + i, writeableExtents.extents[j].startBlock, writeableExtents.extents[j].startBlock + writeableExtents.extents[j].blockCount);
+				FTL_Transfer(1, physSector + i, 1, buffer + (i * Device.sectorSize));
+				break;
+			} else {
+				printk("not in writeable extent: %d %d %d\n", physSector + i, writeableExtents.extents[j].startBlock, writeableExtents.extents[j].startBlock + writeableExtents.extents[j].blockCount);
+			}
+		}
+	}*/
+
+	//FTL_Transfer(1, physSector, physLen, buffer);
 	//printk("iphone_nand_write: sector %ld (%u), len %ld (%u) to %p\n", sectorNum, physSector, len, physLen, buffer);
 	/*for(i = 0; i < physLen; i++)
 	{
