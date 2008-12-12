@@ -609,9 +609,6 @@ static void ecc_generate(int setting, int sectors, uint8_t* sectorData, uint8_t*
 	dmac_flush_range(eccData, (u8*)eccData + (sectors * 20));
 
 	__raw_writel(2, NANDECC + NANDECC_START);
-
-	// not sure why this udelay is necessary (it's not in openiboot), but it is or ECC status never changes.
-	udelay(1);
 }
 
 #define VIC1 IO_ADDRESS(0x38E01000)
@@ -665,18 +662,13 @@ static int generateECC(int setting, uint8_t* data, uint8_t* ecc) {
 
 	while(sectorsLeft > 0) {
 		int toCheck;
-		int ret;
 		if(sectorsLeft > 4)
 			toCheck = 4;
 		else
 			toCheck = sectorsLeft;
 
 		ecc_generate(setting, toCheck, dataPtr, eccPtr);
-		if((ret = ecc_finish()) != 0)
-		{
-			printk("error with ecc_finish during ecc_generate: %d\n", ret);
-			return ERROR_ECC;
-		}
+		ecc_finish();
 
 		if(LargePages) {
 			// If there are more than 4 sectors in a page...
@@ -1013,11 +1005,7 @@ static int nand_write(int bank, int page, uint8_t* buffer, uint8_t* spare, int d
 		memcpy(aTemporaryReadEccBuf, spare, sizeof(SpareData));
 
 		ecc_generate(ECCType, 1, aTemporaryReadEccBuf, aTemporarySBuf + sizeof(SpareData) + TotalECCDataSize);
-		if(ecc_finish() != 0) {
-			memset(aTemporaryReadEccBuf, 0xFF, SECTOR_SIZE);
-			printk("nand: Unexpected error during ECC generation of spare\r\n");
-			return ERROR_ARG;
-		}
+		ecc_finish();
 	}
 
 	__raw_writel(((NANDSetting1 & NAND_CONFIG_SETTING1MASK) << NAND_CONFIG_SETTING1SHIFT) | ((NANDSetting2 & NAND_CONFIG_SETTING2MASK) << NAND_CONFIG_SETTING2SHIFT)
@@ -1093,7 +1081,6 @@ static int nand_flush(void)
 		{
 			if(curBank != -1 && curBlock != -1)
 			{
-				printk("nand_erase: %d, %d\n", curBank, curBlock);
 				nand_erase(curBank, curBlock);
 				for(i = 0; i < Data.pagesPerBlock; i++)
 				{
