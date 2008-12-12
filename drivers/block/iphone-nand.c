@@ -884,6 +884,37 @@ static int nand_read(int direction, int bank, int page, u8* buffer, u8* spare, i
 		}
 
 		return 0;
+	} else {
+		int read = 0;
+		list_for_each_entry(entry, &nand_write_list, list)
+		{
+			if(bank == entry->bank && page == entry->page)
+			{
+				read = 1;
+				if(buffer) 
+				{
+					if(entry->data)
+					{
+						memcpy(buffer, entry->data, Data.bytesPerPage);
+					} else {
+						read = 0;
+					}
+				}
+				if(spare) 
+				{
+					if(entry->oob)
+					{
+						memcpy(spare, entry->oob, Data.bytesPerSpare);
+					} else {
+						read = 0;
+					}
+				}
+				break;
+			}
+		}
+
+		if(read)
+			return 0;
 	}
 
 	if(bank >= Data.banksTotal)
@@ -971,6 +1002,24 @@ static int nand_read(int direction, int bank, int page, u8* buffer, u8* spare, i
 			return ERROR_EMPTYBLOCK;
 		} else if(eccFailed) {
 			return ERROR_NAND;
+		}
+	}
+
+	if(entry && bank == entry->bank && page == entry->page)
+	{
+		if(buffer) 
+		{
+			if(entry->data)
+			{
+				memcpy(buffer, entry->data, Data.bytesPerPage);
+			}
+		}
+		if(spare) 
+		{
+			if(entry->oob)
+			{
+				memcpy(spare, entry->oob, Data.bytesPerSpare);
+			}
 		}
 	}
 
@@ -1077,7 +1126,7 @@ static int nand_flush(void)
 	{
 		entry = list_entry(pos, struct nand_write_item, list);
 
-		if(curBank != entry->bank && curBlock != entry->block)
+		if(curBank != entry->bank || curBlock != entry->block)
 		{
 			if(curBank != -1 && curBlock != -1)
 			{
