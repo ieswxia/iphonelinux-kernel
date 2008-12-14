@@ -29,6 +29,7 @@
 #include <linux/delay.h>
 #include <linux/hdreg.h>
 #include <linux/platform_device.h>
+#include <linux/mutex.h>
 
 #include <mach/hardware.h>
 #include <asm/uaccess.h>
@@ -76,6 +77,9 @@ static UnknownNANDType Data2;
 static u8* aTemporaryReadEccBuf;
 static u8* aTemporaryReadBuf;
 static u8* aTemporarySBuf;
+
+static u8* PageBuffer;
+static u8* SpareBuffer;
 
 static u8* BlockDataBuffer;
 static u8* BlockOOBBuffer;
@@ -634,8 +638,10 @@ static int wait_for_ecc_interrupt(int timeout) {
 
 static int ecc_finish(void) {
 	int ret;
-	if((ret = wait_for_ecc_interrupt(500)) != 0)
+	if((ret = wait_for_ecc_interrupt(500)) != 0) {
+		printk("nand: ecc timed out!\n");
 		return ret;
+	}
 
 	flush_cache_all();
 	if(((ret = __raw_readl(NANDECC + NANDECC_STATUS)) & 0x1) != 0)
@@ -811,7 +817,6 @@ static int nand_read(int direction, int bank, int page, u8* buffer, u8* spare, i
 
 /*	if(doECC && checkBadBlocks)
 		printk("nand_read: direction=%d, bank=%d, page=%d\n", direction, bank, page);*/
-
 	if(direction)
 	{
 		int block = page / Data.pagesPerBlock;
@@ -879,9 +884,9 @@ static int nand_read(int direction, int bank, int page, u8* buffer, u8* spare, i
 			list_add_tail(&newEntry->list, addBefore);
 		}
 
-		if(pages_in_cache > 1024) {
+		/*if(pages_in_cache > 1024) {
 			nand_flush();
-		}
+		}*/
 
 		return 0;
 	} else {
@@ -918,13 +923,19 @@ static int nand_read(int direction, int bank, int page, u8* buffer, u8* spare, i
 	}
 
 	if(bank >= Data.banksTotal)
+	{
 		return ERROR_ARG;
+	}
 
 	if(page >= Data.pagesPerBank)
+	{
 		return ERROR_ARG;
+	}
 
 	if(buffer == NULL && spare == NULL)
+	{
 		return ERROR_ARG;
+	}
 
 	__raw_writel(((NANDSetting1 & NAND_CONFIG_SETTING1MASK) << NAND_CONFIG_SETTING1SHIFT) | ((NANDSetting2 & NAND_CONFIG_SETTING2MASK) << NAND_CONFIG_SETTING2SHIFT)
 		| (1 << (banksTable[bank] + 1)) | NAND_CONFIG_DEFAULTS, NAND + NAND_CONFIG);
@@ -999,8 +1010,10 @@ static int nand_read(int direction, int bank, int page, u8* buffer, u8* spare, i
 
 	if(eccFailed || checkBadBlocks) {
 		if(isEmptyBlock(aTemporarySBuf, Data.bytesPerSpare) != 0) {
+			//printk("nand_read: empty block(%d, %d, %d)\n", direction, bank, page);
 			return ERROR_EMPTYBLOCK;
 		} else if(eccFailed) {
+			printk("nand_read: ecc failed(%d, %d, %d)\n", direction, bank, page);
 			return ERROR_NAND;
 		}
 	}
@@ -1121,7 +1134,9 @@ static int nand_flush(void)
 	struct list_head* temp;
 	int i, pageOffset;
 
-	printk("%s: nand_flush() - %d\n", driver_name, pages_in_cache);
+	if(pages_in_cache > 0)
+		printk("%s: nand_flush() - %d\n", driver_name, pages_in_cache);
+
 	list_for_each_safe(pos, temp, &nand_write_list)
 	{
 		entry = list_entry(pos, struct nand_write_item, list);
@@ -1224,7 +1239,6 @@ static int nand_read_alternate_ecc(int bank, int page, u8* buffer) {
 int HasFTLInit = 0;
 
 static int findDeviceInfoBBT(int bank, void* deviceInfoBBT) {
-	u8* buffer = vmalloc(Data.bytesPerPage);
 	int lowestBlock = Data.blocksPerBank - (Data.blocksPerBank / 10);
 	int block;
 	int ret;
@@ -1237,7 +1251,7 @@ static int findDeviceInfoBBT(int bank, void* deviceInfoBBT) {
 				break;
 			}
 
-			ret = nand_read_alternate_ecc(bank, (block * Data.pagesPerBlock) + page, buffer);
+			ret = nand_read_alternate_ecc(bank, (block * Data.pagesPerBlock) + page, PageBuffer);
 			if(ret != 0) {
 				if(ret == 1) {
 					DebugPrintf("ftl: findDeviceInfoBBT - found 'badBlock' on bank %d, page %d\r\n", (block * Data.pagesPerBlock) + page);
@@ -1248,12 +1262,11 @@ static int findDeviceInfoBBT(int bank, void* deviceInfoBBT) {
 				continue;
 			}
 
-			if(memcmp(buffer, "DEVICEINFOBBT\0\0\0", 16) == 0) {
+			if(memcmp(PageBuffer, "DEVICEINFOBBT\0\0\0", 16) == 0) {
 				if(deviceInfoBBT) {
-					memcpy(deviceInfoBBT, buffer + 0x38, *((u32*)(buffer + 0x34)));
+					memcpy(deviceInfoBBT, PageBuffer + 0x38, *((u32*)(PageBuffer + 0x34)));
 				}
 
-				vfree(buffer);
 				return 1;
 			} else {
 				DebugPrintf("ftl: did not find signature on bank %d, page %d\r\n", (block * Data.pagesPerBlock) + page);
@@ -1261,7 +1274,6 @@ static int findDeviceInfoBBT(int bank, void* deviceInfoBBT) {
 		}
 	}
 
-	vfree(buffer);
 	return 0;
 }
 
@@ -1286,6 +1298,9 @@ static int VFLData4 = 0;
 static u8 VFLData5[0xF8];
 
 static int VFL_Init(void) {
+	PageBuffer = vmalloc(Data.bytesPerPage);
+	SpareBuffer = vmalloc(Data.bytesPerSpare);
+
 	memset(&VFLData1, 0, sizeof(VFLData1));
 	if(pstVFLCxt == NULL) {
 		pstVFLCxt = vmalloc(Data.banksTotal * sizeof(VFLCxt));
@@ -1620,8 +1635,6 @@ static int VFL_Open(void) {
 	int minLpn;
 	int VFLCxtIdx;
 	int page, last;
-	u8* pageBuffer;
-	u8* spareBuffer;
 	VFLCxt* curVFLCxt;
 	void* maxThing;
 	SpareData* spareData;
@@ -1639,12 +1652,6 @@ static int VFL_Open(void) {
 
 
 		curVFLCxt = &pstVFLCxt[bank];
-		pageBuffer = vmalloc(Data.bytesPerPage);
-		spareBuffer = vmalloc(Data.bytesPerSpare);
-		if(pageBuffer == NULL || spareBuffer == NULL) {
-			printk("ftl: cannot allocate page and spare buffer\r\n");
-			return -1;
-		}
 
 		i = 1;
 		for(i = 1; i < Data2.field_0; i++) {
@@ -1652,16 +1659,14 @@ static int VFL_Open(void) {
 			if(!(pstBBTArea[i / 8] & (1 << (i  & 0x7))))
 				continue;
 
-			if(vfl_read_page(bank, i, 0, pageBuffer, spareBuffer) == 1) {
-				memcpy(curVFLCxt->VFLCxtBlock, ((VFLCxt*)pageBuffer)->VFLCxtBlock, sizeof(curVFLCxt->VFLCxtBlock));
+			if(vfl_read_page(bank, i, 0, PageBuffer, SpareBuffer) == 1) {
+				memcpy(curVFLCxt->VFLCxtBlock, ((VFLCxt*)PageBuffer)->VFLCxtBlock, sizeof(curVFLCxt->VFLCxtBlock));
 				break;
 			}
 		}
 
 		if(i == Data2.field_0) {
 			printk("ftl: cannot find readable VFLCxtBlock\r\n");
-			vfree(pageBuffer);
-			vfree(spareBuffer);
 			return -1;
 		}
 
@@ -1672,10 +1677,10 @@ static int VFL_Open(void) {
 			if(block == 0xFFFF)
 				continue;
 
-			if(vfl_read_page(bank, block, 0, pageBuffer, spareBuffer) != 1)
+			if(vfl_read_page(bank, block, 0, PageBuffer, SpareBuffer) != 1)
 				continue;
 
-			spareData = (SpareData*) spareBuffer;
+			spareData = (SpareData*) SpareBuffer;
 			if(spareData->logicalPageNumber > 0 && spareData->logicalPageNumber <= minLpn) {
 				minLpn = spareData->logicalPageNumber;
 				VFLCxtIdx = i;
@@ -1684,36 +1689,29 @@ static int VFL_Open(void) {
 
 		if(VFLCxtIdx == 4) {
 			printk("ftl: cannot find readable VFLCxtBlock index in spares\r\n");
-			vfree(pageBuffer);
-			vfree(spareBuffer);
 			return -1;
 		}
 
 		page = 8;
 		last = 0;
 		for(page = 8; page < Data.pagesPerBlock; page += 8) {
-			if(vfl_read_page(bank, curVFLCxt->VFLCxtBlock[VFLCxtIdx], page, pageBuffer, spareBuffer) == 0) {
+			if(vfl_read_page(bank, curVFLCxt->VFLCxtBlock[VFLCxtIdx], page, PageBuffer, SpareBuffer) == 0) {
 				break;
 			}
 			
 			last = page;
 		}
 
-		if(vfl_read_page(bank, curVFLCxt->VFLCxtBlock[VFLCxtIdx], last, pageBuffer, spareBuffer) == 0) {
+		if(vfl_read_page(bank, curVFLCxt->VFLCxtBlock[VFLCxtIdx], last, PageBuffer, SpareBuffer) == 0) {
 			printk("ftl: cannot find readable VFLCxt\n");
-			vfree(pageBuffer);
-			vfree(spareBuffer);
 			return -1;
 		}
 
 		// Aha, so the upshot is that this finds the VFLCxt and copies it into pstVFLCxt
-		memcpy(&pstVFLCxt[bank], pageBuffer, sizeof(VFLCxt));
+		memcpy(&pstVFLCxt[bank], PageBuffer, sizeof(VFLCxt));
 		if(curVFLCxt->field_0 >= VFLData4) {
 			VFLData4 = curVFLCxt->field_0;
 		}
-
-		vfree(pageBuffer);
-		vfree(spareBuffer);
 
 		if(vfl_check_checksum(bank) == 0) {
 			printk("ftl: VFLCxt has bad checksum\n");
@@ -1788,8 +1786,6 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 	int i;
 	u32 minLpn;
 	u32 ftlCxtBlock;
-	u8* pageBuffer;
-	u8* spareBuffer;
 
 	u16* pawMapTable = pstFTLCxt->pawMapTable;
 	u16* pawEraseCounterTable = pstFTLCxt->pawEraseCounterTable;
@@ -1810,24 +1806,17 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 	
 	memcpy(pstFTLCxt->thing, thing, sizeof(pstFTLCxt->thing));
 
-	pageBuffer = vmalloc(Data.bytesPerPage);
-	spareBuffer = vmalloc(Data.bytesPerSpare);
-	if(!pageBuffer || !spareBuffer) {
-		printk("ftl: FTL_Open ran out of memory!\r\n");
-		return ERROR_ARG;
-	}
-
 	ftlCxtBlock = 0xffff;
 	minLpn = 0xffffffff;
 	for(i = 0; i < sizeof(pstFTLCxt->thing)/sizeof(u16); i++) {
-		ret = VFL_Transfer(0, Data.pagesPerSubBlk * pstFTLCxt->thing[i], pageBuffer, spareBuffer, 1, &refreshPage);
+		ret = VFL_Transfer(0, Data.pagesPerSubBlk * pstFTLCxt->thing[i], PageBuffer, SpareBuffer, 1, &refreshPage);
 		if(ret == ERROR_ARG) {
-			vfree(pageBuffer);
-			vfree(spareBuffer);
+			vfree(PageBuffer);
+			vfree(SpareBuffer);
 			goto FTL_Open_Error;
 		}
 
-		spareData = (SpareData*) spareBuffer;
+		spareData = (SpareData*) SpareBuffer;
 		if((spareData->field_9 - 0x43) > 0xC)
 			continue;
 
@@ -1851,11 +1840,11 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 
 	ftlCxtFound = 0;
 	for(i = Data.pagesPerSubBlk - 1; i > 0; i--) {
-		ret = VFL_Transfer(0, Data.pagesPerSubBlk * ftlCxtBlock + i, pageBuffer, spareBuffer, 1, &refreshPage);
+		ret = VFL_Transfer(0, Data.pagesPerSubBlk * ftlCxtBlock + i, PageBuffer, SpareBuffer, 1, &refreshPage);
 		if(ret == 1) {
 			continue;
-		} else if(ret == 0 && ((SpareData*)spareBuffer)->field_9 == 0x43) {
-			memcpy(FTLCxtBuffer, pageBuffer, sizeof(FTLCxt));
+		} else if(ret == 0 && ((SpareData*)SpareBuffer)->field_9 == 0x43) {
+			memcpy(FTLCxtBuffer, PageBuffer, sizeof(FTLCxt));
 			ftlCxtFound = 1;
 			break;
 		} else {
@@ -1884,7 +1873,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 		pagesToRead++;
 
 	for(i = 0; i < pagesToRead; i++) {
-		if(VFL_Transfer(0, pstFTLCxt->pages_for_pawMapTable[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0)
+		if(VFL_Transfer(0, pstFTLCxt->pages_for_pawMapTable[i], PageBuffer, SpareBuffer, 1, &refreshPage) != 0)
 			goto FTL_Open_Error_Release;
 
 		toRead = Data.bytesPerPage;
@@ -1892,7 +1881,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 			toRead = (Data.userSubBlksTotal * 2) - (i * Data.bytesPerPage);
 		}
 
-		memcpy(((u8*)pstFTLCxt->pawMapTable) + (i * Data.bytesPerPage), pageBuffer, toRead);	
+		memcpy(((u8*)pstFTLCxt->pawMapTable) + (i * Data.bytesPerPage), PageBuffer, toRead);	
 	}
 
 	pagesToRead = (Data.pagesPerSubBlk * 34) / Data.bytesPerPage;
@@ -1900,7 +1889,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 		pagesToRead++;
 
 	for(i = 0; i < pagesToRead; i++) {
-		if(VFL_Transfer(0, pstFTLCxt->pages_for_wPageOffsets[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0)
+		if(VFL_Transfer(0, pstFTLCxt->pages_for_wPageOffsets[i], PageBuffer, SpareBuffer, 1, &refreshPage) != 0)
 			goto FTL_Open_Error_Release;
 
 		toRead = Data.bytesPerPage;
@@ -1908,7 +1897,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 			toRead = (Data.pagesPerSubBlk * 34) - (i * Data.bytesPerPage);
 		}
 
-		memcpy(((u8*)pstFTLCxt->wPageOffsets) + (i * Data.bytesPerPage), pageBuffer, toRead);	
+		memcpy(((u8*)pstFTLCxt->wPageOffsets) + (i * Data.bytesPerPage), PageBuffer, toRead);	
 	}
 
 	pagesToRead = ((Data.userSubBlksTotal + 23) * sizeof(u16)) / Data.bytesPerPage;
@@ -1916,7 +1905,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 		pagesToRead++;
 
 	for(i = 0; i < pagesToRead; i++) {
-		if(VFL_Transfer(0, pstFTLCxt->pages_for_pawEraseCounterTable[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0)
+		if(VFL_Transfer(0, pstFTLCxt->pages_for_pawEraseCounterTable[i], PageBuffer, SpareBuffer, 1, &refreshPage) != 0)
 			goto FTL_Open_Error_Release;
 
 		toRead = Data.bytesPerPage;
@@ -1924,7 +1913,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 			toRead = ((Data.pagesPerSubBlk + 23) * sizeof(u16)) - (i * Data.bytesPerPage);
 		}
 
-		memcpy(((u8*)pstFTLCxt->pawEraseCounterTable) + (i * Data.bytesPerPage), pageBuffer, toRead);	
+		memcpy(((u8*)pstFTLCxt->pawEraseCounterTable) + (i * Data.bytesPerPage), PageBuffer, toRead);	
 	}
 
 	printk("ftl: Detected version %x %x\r\n", FTLCxtBuffer->versionLower, FTLCxtBuffer->versionUpper);
@@ -1935,7 +1924,7 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 
 		success = 1;
 		for(i = 0; i < pagesToRead; i++) {
-			if(VFL_Transfer(0, pstFTLCxt->pages_for_pawReadCounterTable[i], pageBuffer, spareBuffer, 1, &refreshPage) != 0) {
+			if(VFL_Transfer(0, pstFTLCxt->pages_for_pawReadCounterTable[i], PageBuffer, SpareBuffer, 1, &refreshPage) != 0) {
 				success = 0;
 				break;
 			}
@@ -1945,16 +1934,16 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 				toRead = ((Data.pagesPerSubBlk + 23) * sizeof(u16)) - (i * Data.bytesPerPage);
 			}
 
-			memcpy(((u8*)pstFTLCxt->pawReadCounterTable) + (i * Data.bytesPerPage), pageBuffer, toRead);	
+			memcpy(((u8*)pstFTLCxt->pawReadCounterTable) + (i * Data.bytesPerPage), PageBuffer, toRead);	
 		}
 
 		if((pstFTLCxt->field_3D4 + 1) == 0) {
 			x = pstFTLCxt->field_3D0 / Data.pagesPerSubBlk;
 			if(x == 0 || x <= Data.userSubBlksTotal) {
-				if(VFL_Transfer(0, pstFTLCxt->field_3D0, pageBuffer, spareBuffer, 1, &refreshPage) != 0)
+				if(VFL_Transfer(0, pstFTLCxt->field_3D0, PageBuffer, SpareBuffer, 1, &refreshPage) != 0)
 					goto FTL_Open_Error_Release;
 
-				sum_data(pageBuffer);
+				sum_data(PageBuffer);
 			}
 		}
 	} else {
@@ -1978,16 +1967,14 @@ static int FTL_Open(int* pagesAvailable, int* bytesPerPage) {
 
 	if(success) {
 		printk("ftl: FTL successfully opened!\r\n");
-		vfree(pageBuffer);
-		vfree(spareBuffer);
 		*pagesAvailable = Data.userPagesTotal;
 		*bytesPerPage = Data.bytesPerPage;
 		return 0;
 	}
 
 FTL_Open_Error_Release:
-	vfree(pageBuffer);
-	vfree(spareBuffer);
+	vfree(PageBuffer);
+	vfree(SpareBuffer);
 
 FTL_Open_Error:
 	printk("ftl: FTL_Open cannot load FTLCxt!\r\n");
@@ -2016,8 +2003,6 @@ static int FTL_Transfer(int direction, int logicalPageNumber, int totalPagesToRe
 	int ret, pagesRead, pagesToRead, refreshPage, currentLogicalPageNumber;
 	int readSuccessful;
 	int loop;
-	u8* pageBuffer;
-	u8* spareBuffer;
 	FTLCxtLog* pLog;
 
 	FTLData1.field_8 += totalPagesToRead;
@@ -2036,13 +2021,6 @@ static int FTL_Transfer(int direction, int logicalPageNumber, int totalPagesToRe
 	lbn = logicalPageNumber / Data.pagesPerSubBlk;
 	offset = logicalPageNumber - (lbn * Data.pagesPerSubBlk);
 	
-	pageBuffer = vmalloc(Data.bytesPerPage);
-	spareBuffer = vmalloc(Data.bytesPerSpare);
-	if(!pageBuffer || !spareBuffer) {
-		printk("ftl: FTL_Transfer ran out of memory!\r\n");
-		return ERROR_ARG;
-	}
-
 	pLog = NULL;
 	for(i = 0; i < 17; i++) {
 		if(pstFTLCxt->pLog[i].wVbn == 0xFFFF)
@@ -2114,7 +2092,7 @@ static int FTL_Transfer(int direction, int logicalPageNumber, int totalPagesToRe
 		do {
 			if(pagesRead != totalPagesToRead && Data.pagesPerSubBlk != offset) {
 				int virtualPage = FTL_map_page(pLog, lbn, offset);
-				ret = VFL_Transfer(direction, virtualPage, pBuf + (Data.bytesPerPage * pagesRead), spareBuffer, 1, &refreshPage);
+				ret = VFL_Transfer(direction, virtualPage, pBuf + (Data.bytesPerPage * pagesRead), SpareBuffer, 1, &refreshPage);
 				if(refreshPage) {
 					printk("ftl: _AddLbnToRefreshList (0x%x, 0x%x)\r\n", lbn, virtualPage / Data.pagesPerSubBlk);
 				}
@@ -2122,8 +2100,8 @@ static int FTL_Transfer(int direction, int logicalPageNumber, int totalPagesToRe
 				if(ret == ERROR_ARG)
 					goto FTL_Transfer_Error_Release;
 
-				if(ret == ERROR_NAND || ((SpareData*) spareBuffer)->eccMark != 0xFF) {
-					printk("ftl: ECC error, ECC mark is: %x\r\n", ((SpareData*) spareBuffer)->eccMark);
+				if(ret == ERROR_NAND || ((SpareData*) SpareBuffer)->eccMark != 0xFF) {
+					printk("ftl: ECC error, ECC mark is: %x\r\n", ((SpareData*) SpareBuffer)->eccMark);
 					hasError = 1;
 					if(pLog) {
 						virtualPage = FTL_map_page(pLog, lbn, offset);
@@ -2135,8 +2113,8 @@ static int FTL_Transfer(int direction, int logicalPageNumber, int totalPagesToRe
 				}
 
 				if(ret == 0) {
-					if(((SpareData*) spareBuffer)->logicalPageNumber != offset) {
-						printk("ftl: error, dwWrittenLpn(0x%x) != dwLpn(0x%x)\r\n", ((SpareData*) spareBuffer)->logicalPageNumber, offset);
+					if(((SpareData*) SpareBuffer)->logicalPageNumber != offset) {
+						printk("ftl: error, dwWrittenLpn(0x%x) != dwLpn(0x%x)\r\n", ((SpareData*) SpareBuffer)->logicalPageNumber, offset);
 					}
 				}
 
@@ -2168,8 +2146,6 @@ static int FTL_Transfer(int direction, int logicalPageNumber, int totalPagesToRe
 	}
 
 FTL_Transfer_Done:
-	vfree(pageBuffer);
-	vfree(spareBuffer);
 	if(hasError) {
 		printk("ftl: USER_DATA_ERROR, failed with (0x%x, 0x%x, 0x%p)\r\n", logicalPageNumber, totalPagesToRead, pBuf);
 		return ERROR_NAND;
@@ -2178,8 +2154,6 @@ FTL_Transfer_Done:
 	return 0;
 
 FTL_Transfer_Error_Release:
-	vfree(pageBuffer);
-	vfree(spareBuffer);
 	printk("ftl: _FTLRead error!\r\n");
 	return ret;
 }
@@ -2189,7 +2163,6 @@ static int ftl_setup(void) {
 	int foundSignature;
 	int pagesAvailable;
 	int bytesPerPage;
-	u8* buffer;
 	int ret;
 
 	if(HasFTLInit)
@@ -2210,10 +2183,9 @@ static int ftl_setup(void) {
 	foundSignature = 0;
 
 	DebugPrintf("ftl: Attempting to read %d pages from first block of first bank.\r\n", Data.pagesPerBlock);
-	buffer = vmalloc(Data.bytesPerPage);
 	for(i = 0; i < Data.pagesPerBlock; i++) {
-		if((ret = nand_read_alternate_ecc(0, i, buffer)) == 0) {
-			u32 id = *((u32*) buffer);
+		if((ret = nand_read_alternate_ecc(0, i, PageBuffer)) == 0) {
+			u32 id = *((u32*) PageBuffer);
 			if(id == FTL_ID_V1 || id == FTL_ID_V2) {
 				printk("ftl: Found production format: %x\r\n", id);
 				foundSignature = 1;
@@ -2225,7 +2197,6 @@ static int ftl_setup(void) {
 			DebugPrintf("ftl: page %d of first bank is unreadable: %x!\r\n", i, ret);
 		}
 	}
-	vfree(buffer);
 
 	if(!foundSignature || !hasDeviceInfoBBT()) {
 		printk("ftl: no signature or production format.\r\n");
@@ -2303,6 +2274,7 @@ struct iphone_nand_write_cache_entry {
 };
 struct list_head write_cache;
 
+
 static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
 	struct iphone_nand_write_cache_entry* entry;
 	unsigned int i;
@@ -2310,13 +2282,15 @@ static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long secto
 	unsigned int physLen = len / (Device.sectorSize / SECTOR_SIZE);
 
 	int read = 0;
+	//printk("iphone_nand_read: sector %ld (%u), len %ld (%u) to %p\n", sectorNum, physSector, len, physLen, buffer);
+	//FTL_Transfer(0, physSector, physLen, buffer);
 	for(i = 0; i < physLen; i++)
 	{
 		list_for_each_entry(entry, &write_cache, list)
 		{
 			if((i + physSector) == entry->sectorNum)
 			{
-				printk("read sector in cache: %u\n", physSector + i);
+				//printk("read sector in cache: %u\n", physSector + i);
 				memcpy(buffer + (i * Device.sectorSize), entry->buffer, Device.sectorSize);
 				read = 1;
 				break;
@@ -2329,41 +2303,23 @@ static void iphone_nand_read(struct iphone_nand_device* dev, unsigned long secto
 }
 
 static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sectorNum, unsigned long len, char* buffer) {
-	//struct iphone_nand_write_cache_entry* entry;
-	//unsigned int i, j;
+	struct iphone_nand_write_cache_entry* entry;
+	unsigned int i, j;
 	unsigned int physSector = sectorNum / (Device.sectorSize / SECTOR_SIZE);
 	unsigned int physLen = len / (Device.sectorSize / SECTOR_SIZE);
-	/*char* cacheBuffer = NULL;
-	int written;*/
-
-	FTL_Transfer(1, physSector, physLen, buffer);
-	
-	/*
-	for(i = 0; i < physLen; i++)
-	{
-		for(j = 0; j < writeableExtents.numExtents; j++)
-		{
-			if(writeableExtents.extents[j].startBlock <= (physSector + i) && (physSector + i) < (writeableExtents.extents[j].startBlock + writeableExtents.extents[j].blockCount))
-			{
-				printk("in writeable extent: %d %d %d\n", physSector + i, writeableExtents.extents[j].startBlock, writeableExtents.extents[j].startBlock + writeableExtents.extents[j].blockCount);
-				FTL_Transfer(1, physSector + i, 1, buffer + (i * Device.sectorSize));
-				break;
-			} else {
-				printk("not in writeable extent: %d %d %d\n", physSector + i, writeableExtents.extents[j].startBlock, writeableExtents.extents[j].startBlock + writeableExtents.extents[j].blockCount);
-			}
-		}
-	}*/
+	char* cacheBuffer = NULL;
+	int written;
 
 	//FTL_Transfer(1, physSector, physLen, buffer);
 	//printk("iphone_nand_write: sector %ld (%u), len %ld (%u) to %p\n", sectorNum, physSector, len, physLen, buffer);
-	/*for(i = 0; i < physLen; i++)
+	for(i = 0; i < physLen; i++)
 	{
 		written = 0;
 		for(j = 0; j < writeableExtents.numExtents; j++)
 		{
 			if(writeableExtents.extents[j].startBlock <= (physSector + i) && (physSector + i) < (writeableExtents.extents[j].startBlock + writeableExtents.extents[j].blockCount))
 			{
-				printk("write sector on disk: %u\n", physSector + i);
+				//printk("write sector on disk: %u\n", physSector + i);
 				FTL_Transfer(1, physSector + i, 1, buffer + (i * Device.sectorSize));
 				written = 1;
 				break;
@@ -2374,7 +2330,7 @@ static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sect
 			{
 				if((i + physSector) == entry->sectorNum)
 				{
-					printk("write sector in cache: %u\n", physSector + i);
+					//printk("write sector in cache: %u\n", physSector + i);
 					cacheBuffer = entry->buffer;
 					break;
 				}
@@ -2388,18 +2344,28 @@ static void iphone_nand_write(struct iphone_nand_device* dev, unsigned long sect
 				INIT_LIST_HEAD(&entry->list);
 				list_add_tail(&entry->list, &write_cache);
 				cacheBuffer = entry->buffer;
-				printk("caching new sector in cache: %u\n", physSector + i);
+				//printk("caching new sector in cache: %u\n", physSector + i);
 			}
 
 			memcpy(cacheBuffer, buffer + (i * Device.sectorSize), Device.sectorSize);
 		}
-	}*/
+	}
 }
 
+static volatile int num_in_request = 0;
+static DEFINE_MUTEX(request_mutex);
 static void iphone_nand_request(struct request_queue* q)
 {
 	struct request *req;
+	
+	mutex_lock(&request_mutex);
 
+	if(num_in_request != 0) {
+		printk("!!!!!!!!!!!! OMG MULTIPLE USERS IN IPHONE_NAND_REQUEST !!!!!!!!!!!!\n");
+		return;
+	}
+
+	num_in_request++;
 	while ((req = elv_next_request(q)) != NULL)
 	{
 		if (! blk_fs_request(req))
@@ -2419,6 +2385,11 @@ static void iphone_nand_request(struct request_queue* q)
 		}
 		end_request(req, 1);
 	}
+	
+	nand_flush();
+	num_in_request--;
+
+	mutex_unlock(&request_mutex);
 }
 
 static int major_num = 0;
