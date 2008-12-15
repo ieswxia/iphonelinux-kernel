@@ -218,7 +218,7 @@ static int iphone_pmu_set_day(int num) {
 }
 
 static int iphone_pmu_set_month(int num) {
-	return iphone_pmu_write_reg(PMU_RTCMT, bin2bcd(num) & PMU_RTCMT_MASK, 0);
+	return iphone_pmu_write_reg(PMU_RTCMT, num & PMU_RTCMT_MASK, 0);
 }
 
 static int iphone_pmu_set_year(int num) {
@@ -240,7 +240,7 @@ static int iphone_rtc_gettime(struct device *dev, struct rtc_time *rtc_tm)
 	rtc_tm->tm_hour = iphone_pmu_get_hours();
 	rtc_tm->tm_mday = iphone_pmu_get_day();
 	rtc_tm->tm_mon = iphone_pmu_get_month() - 1;
-	rtc_tm->tm_year = iphone_pmu_get_year() + 100;
+	rtc_tm->tm_year = iphone_pmu_get_year() + 101;
 
 	return 0;
 }
@@ -252,7 +252,7 @@ static int iphone_rtc_settime(struct device *dev, struct rtc_time *rtc_tm)
 	iphone_pmu_set_hours(rtc_tm->tm_hour);
 	iphone_pmu_set_day(rtc_tm->tm_mday);
 	iphone_pmu_set_month(rtc_tm->tm_mon + 1);
-	iphone_pmu_set_year(rtc_tm->tm_year - 100);
+	iphone_pmu_set_year(rtc_tm->tm_year - 101);
 
 	return 0;
 }
