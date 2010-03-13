@@ -3080,7 +3080,7 @@ static void __devexit s3c_hsotg_delete_debug(struct s3c_hsotg *hsotg)
  */
 static void s3c_hsotg_gate(struct platform_device *pdev, bool on)
 {
-	unsigned long flags;
+/*	unsigned long flags;
 	u32 others;
 
 	local_irq_save(flags);
@@ -3092,7 +3092,7 @@ static void s3c_hsotg_gate(struct platform_device *pdev, bool on)
 		others &= ~S3C64XX_OTHERS_USBMASK;
 	__raw_writel(others, S3C64XX_OTHERS);
 
-	local_irq_restore(flags);
+	local_irq_restore(flags);*/
 }
 
 static struct s3c_hsotg_plat s3c_hsotg_default_pdata;

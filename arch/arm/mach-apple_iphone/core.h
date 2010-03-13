@@ -38,4 +38,6 @@ extern void __init iphone_init_irq(void);
 extern void __init iphone_map_io(void);
 
 extern struct sys_timer iphone_timer;
+
+extern struct platform_device s3c_device_usb_hsotg;
 #endif
