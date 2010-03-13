@@ -173,6 +173,7 @@ machine-$(CONFIG_ARCH_VERSATILE)	:= versatile
 machine-$(CONFIG_ARCH_W90X900)		:= w90x900
 machine-$(CONFIG_ARCH_NUC93X)		:= nuc93x
 machine-$(CONFIG_FOOTBRIDGE)		:= footbridge
+machine-$(CONFIG_MACH_APPLE_IPHONE)	:= apple_iphone
 
 # Platform directory name.  This list is sorted alphanumerically
 # by CONFIG_* macro name.

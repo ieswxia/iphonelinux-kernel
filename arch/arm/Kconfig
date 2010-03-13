@@ -219,6 +219,21 @@ choice
 	prompt "ARM system type"
 	default ARCH_VERSATILE
 
+config MACH_APPLE_IPHONE
+	bool "Apple iPhone"
+	select SERIAL_CORE
+	select SERIAL_CORE_CONSOLE
+	select FB
+	select FB_CFB_FILLRECT
+	select FB_CFB_COPYAREA
+	select FB_CFB_IMAGEBLIT
+	select FB_SYS_FOPS
+	select FRAMEBUFFER_CONSOLE
+	select HAVE_CLK
+	select GENERIC_GPIO
+	help
+	  Apple's iPhone!
+
 config ARCH_AAEC2000
 	bool "Agilent AAEC-2000 based"
 	select CPU_ARM920T
@@ -751,6 +766,8 @@ config ARCH_U8500
 	  Support for ST-Ericsson's Ux500 architecture
 
 endchoice
+
+source "arch/arm/mach-apple_iphone/Kconfig"
 
 source "arch/arm/mach-aaec2000/Kconfig"
 
