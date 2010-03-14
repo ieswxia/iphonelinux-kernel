@@ -33,6 +33,8 @@
 #include <plat/regs-sys.h>
 #include <plat/udc-hs.h>
 
+#include <mach/iphone-clock.h>
+
 #define DMA_ADDR_INVALID (~((dma_addr_t)0))
 
 /* EP0_MPS_LIMIT
@@ -3080,6 +3082,18 @@ static void __devexit s3c_hsotg_delete_debug(struct s3c_hsotg *hsotg)
  */
 static void s3c_hsotg_gate(struct platform_device *pdev, bool on)
 {
+	if(on)
+	{
+		iphone_power_ctrl(IPHONE_USB_POWER, on);
+		mdelay(10);
+		iphone_clock_gate_switch(IPHONE_USB_CLOCK, on);
+		iphone_clock_gate_switch(IPHONE_USBPHY_CLOCK, on);
+	} else
+	{
+		iphone_clock_gate_switch(IPHONE_USB_CLOCK, on);
+		iphone_clock_gate_switch(IPHONE_USBPHY_CLOCK, on);
+		iphone_power_ctrl(IPHONE_USB_POWER, on);
+	}
 /*	unsigned long flags;
 	u32 others;
 

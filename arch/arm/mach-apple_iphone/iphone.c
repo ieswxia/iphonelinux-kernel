@@ -160,7 +160,7 @@ void __init iphone_init(void)
 	printk("iphone: platform init\r\n");
 	iphone_dma_setup();
 
-	//platform_device_register(&s3c_device_usb_hsotg);
+	platform_device_register(&s3c_device_usb_hsotg);
 }
 
 MACHINE_START(APPLE_IPHONE, "Apple iPhone")

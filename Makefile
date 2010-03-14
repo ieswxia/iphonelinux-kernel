@@ -331,11 +331,11 @@ CHECK		= sparse
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void $(CF)
 MODFLAGS	= -DMODULE
-CFLAGS_MODULE   = $(MODFLAGS) -mfpu=vfp
-AFLAGS_MODULE   = $(MODFLAGS) -mfpu=vfp
-LDFLAGS_MODULE  = -T $(srctree)/scripts/module-common.lds -mfpu=vfp
-CFLAGS_KERNEL	= -mfpu=vfp
-AFLAGS_KERNEL	= -mfpu=vfp
+CFLAGS_MODULE   = $(MODFLAGS)
+AFLAGS_MODULE   = $(MODFLAGS)
+LDFLAGS_MODULE  = -T $(srctree)/scripts/module-common.lds
+CFLAGS_KERNEL	= 
+AFLAGS_KERNEL	= 
 CFLAGS_GCOV	= -fprofile-arcs -ftest-coverage
 
 

@@ -67,7 +67,7 @@
 #define VICPERIPHID2 0xFE8
 #define VICPERIPHID3 0xFEC
 
-static inline void iphone_irq_ack(unsigned int irqno)
+static inline void iphone_irq_eoi(unsigned int irqno)
 {
 	if(irqno < VIC_InterruptSeparator) {
 		__raw_writel(1, VIC0 + VICADDRESS);
@@ -94,8 +94,8 @@ static inline void iphone_irq_unmask(unsigned int irqno)
 	}
 }
 
-static struct irq_chip iphone_irq_level_chip = {
-	.ack = iphone_irq_ack,
+static struct irq_chip iphone_irq_fasteoi_chip = {
+	.eoi = iphone_irq_eoi,
 	.mask = iphone_irq_mask,
 	.unmask = iphone_irq_unmask,
 };
@@ -133,11 +133,11 @@ void __init iphone_init_irq(void)
 		__raw_writel(i, VIC0 + VICVECTADDRS + (i * 4));
 		__raw_writel(VIC_InterruptSeparator + i, VIC1 + VICVECTADDRS + (i * 4));
 
-		set_irq_chip(i, &iphone_irq_level_chip);
-		set_irq_handler(i, handle_level_irq);
+		set_irq_chip(i, &iphone_irq_fasteoi_chip);
+		set_irq_handler(i, handle_fasteoi_irq);
 		set_irq_flags(i, IRQF_VALID);
 
-		set_irq_chip(VIC_InterruptSeparator + i, &iphone_irq_level_chip);
+		set_irq_chip(VIC_InterruptSeparator + i, &iphone_irq_fasteoi_chip);
 		set_irq_handler(VIC_InterruptSeparator + i, handle_level_irq);
 		set_irq_flags(VIC_InterruptSeparator + i, IRQF_VALID);
 	}
