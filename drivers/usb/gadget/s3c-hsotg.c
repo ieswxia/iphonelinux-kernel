@@ -473,17 +473,6 @@ static int s3c_hsotg_write_fifo(struct s3c_hsotg *hsotg,
 		to_write = can_write;
 		pkt_round = to_write % hs_ep->ep.maxpacket;
 
-		/* Not sure, but we probably shouldn't be writing partial
-		 * packets into the FIFO, so round the write down to an
-		 * exact number of packets.
-		 *
-		 * Note, we do not currently check to see if we can ever
-		 * write a full packet or not to the FIFO.
-		 */
-
-		if (pkt_round)
-			to_write -= pkt_round;
-
 		/* enable correct FIFO interrupt to alert us when there
 		 * is more room left. */
 
