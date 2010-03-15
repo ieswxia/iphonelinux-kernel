@@ -119,7 +119,8 @@ struct s3c_hsotg_ep {
 	char			name[10];
 };
 
-#define S3C_HSOTG_EPS	(8+1)	/* limit to 9 for the moment */
+//#define S3C_HSOTG_EPS	(8+1)	/* limit to 9 for the moment */
+#define S3C_HSOTG_EPS	(6)
 
 /**
  * struct s3c_hsotg - driver state.
@@ -298,19 +299,18 @@ static void s3c_hsotg_ctrl_epint(struct s3c_hsotg *hsotg,
  */
 static void s3c_hsotg_init_fifo(struct s3c_hsotg *hsotg)
 {
-	/* the ryu 2.6.24 release ahs
+	// the ryu 2.6.24 release ahs
 	   writel(0x1C0, hsotg->regs + S3C_GRXFSIZ);
 	   writel(S3C_GNPTXFSIZ_NPTxFStAddr(0x200) |
 		S3C_GNPTXFSIZ_NPTxFDep(0x1C0),
 		hsotg->regs + S3C_GNPTXFSIZ);
-	*/
 
 	/* set FIFO sizes to 2048/0x1C0 */
 
-	writel(2048, hsotg->regs + S3C_GRXFSIZ);
+/*	writel(2048, hsotg->regs + S3C_GRXFSIZ);
 	writel(S3C_GNPTXFSIZ_NPTxFStAddr(2048) |
 	       S3C_GNPTXFSIZ_NPTxFDep(0x1C0),
-	       hsotg->regs + S3C_GNPTXFSIZ);
+	       hsotg->regs + S3C_GNPTXFSIZ);*/
 }
 
 /**
@@ -1002,6 +1002,8 @@ static int s3c_hsotg_process_req_feature(struct s3c_hsotg *hsotg,
 	return 1;
 }
 
+static void s3c_hsotg_enqueue_setup(struct s3c_hsotg *hsotg);
+
 /**
  * s3c_hsotg_process_control - process a control request
  * @hsotg: The device state
@@ -1100,10 +1102,9 @@ static void s3c_hsotg_process_control(struct s3c_hsotg *hsotg,
 
 		/* don't belive we need to anything more to get the EP
 		 * to reply with a STALL packet */
+		s3c_hsotg_enqueue_setup(hsotg);
 	}
 }
-
-static void s3c_hsotg_enqueue_setup(struct s3c_hsotg *hsotg);
 
 /**
  * s3c_hsotg_complete_setup - completion of a setup transfer
@@ -1690,9 +1691,9 @@ static void s3c_hsotg_epint(struct s3c_hsotg *hsotg, unsigned int idx,
 	u32 epctl_reg = dir_in ? S3C_DIEPCTL(idx) : S3C_DOEPCTL(idx);
 	u32 epsiz_reg = dir_in ? S3C_DIEPTSIZ(idx) : S3C_DOEPTSIZ(idx);
 	u32 ints;
-	u32 clear = 0;
 
 	ints = readl(hsotg->regs + epint_reg);
+	writel(ints, hsotg->regs + epint_reg);
 
 	dev_dbg(hsotg->dev, "%s: ep%d(%s) DxEPINT=0x%08x\n",
 		__func__, idx, dir_in ? "in" : "out", ints);
@@ -1716,18 +1717,14 @@ static void s3c_hsotg_epint(struct s3c_hsotg *hsotg, unsigned int idx,
 
 			s3c_hsotg_handle_outdone(hsotg, idx, false);
 		}
-
-		clear |= S3C_DxEPINT_XferCompl;
 	}
 
 	if (ints & S3C_DxEPINT_EPDisbld) {
 		dev_dbg(hsotg->dev, "%s: EPDisbld\n", __func__);
-		clear |= S3C_DxEPINT_EPDisbld;
 	}
 
 	if (ints & S3C_DxEPINT_AHBErr) {
 		dev_dbg(hsotg->dev, "%s: AHBErr\n", __func__);
-		clear |= S3C_DxEPINT_AHBErr;
 	}
 
 	if (ints & S3C_DxEPINT_Setup) {  /* Setup or Timeout */
@@ -1744,13 +1741,10 @@ static void s3c_hsotg_epint(struct s3c_hsotg *hsotg, unsigned int idx,
 			else
 				s3c_hsotg_handle_outdone(hsotg, 0, true);
 		}
-
-		clear |= S3C_DxEPINT_Setup;
 	}
 
 	if (ints & S3C_DxEPINT_Back2BackSetup) {
 		dev_dbg(hsotg->dev, "%s: B2BSetup/INEPNakEff\n", __func__);
-		clear |= S3C_DxEPINT_Back2BackSetup;
 	}
 
 	if (dir_in) {
@@ -1759,18 +1753,14 @@ static void s3c_hsotg_epint(struct s3c_hsotg *hsotg, unsigned int idx,
 		if (ints & S3C_DIEPMSK_INTknTXFEmpMsk) {
 			dev_dbg(hsotg->dev, "%s: ep%d: INTknTXFEmpMsk\n",
 				__func__, idx);
-			clear |= S3C_DIEPMSK_INTknTXFEmpMsk;
 		}
 
 		/* this probably means something bad is happening */
 		if (ints & S3C_DIEPMSK_INTknEPMisMsk) {
 			dev_warn(hsotg->dev, "%s: ep%d: INTknEP\n",
 				 __func__, idx);
-			clear |= S3C_DIEPMSK_INTknEPMisMsk;
 		}
 	}
-
-	writel(clear, hsotg->regs + epint_reg);
 }
 
 /**
@@ -2122,7 +2112,10 @@ irq_retry:
 	/* if we've had fifo events, we should try and go around the
 	 * loop again to see if there's any point in returning yet. */
 
-	if (gintsts & IRQ_RETRY_MASK && --retry_count > 0)
+	gintsts = readl(hsotg->regs + S3C_GINTSTS);
+	gintmsk = readl(hsotg->regs + S3C_GINTMSK);
+
+	if (gintsts & gintmsk && --retry_count > 0)
 			goto irq_retry;
 
 	return IRQ_HANDLED;
