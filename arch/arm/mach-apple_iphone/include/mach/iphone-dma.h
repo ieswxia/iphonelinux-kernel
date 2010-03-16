@@ -7,8 +7,8 @@
 #define ERROR_ALIGN 0x9
 
 typedef volatile struct DMARequest {
-	int started;
-	int done;
+	bool started;
+	bool done;
 	struct task_struct* task;
 	// TODO: fill this thing out
 } DMARequest;

@@ -150,8 +150,8 @@ int iphone_dma_request(int Source, int SourceTransferWidth, int SourceBurstSize,
 		}
 
 		while(getFreeChannel(controller, channel) == ERROR_BUSY);
-		requests[*controller][*channel].started = 1;
-		requests[*controller][*channel].done = 0;
+		requests[*controller - 1][*channel].started = true;
+		requests[*controller - 1][*channel].done = false;
 	}
 
 	if(*controller == 1) {
@@ -330,8 +330,8 @@ int iphone_dma_finish(int controller, int channel, int timeout) {
 	if(!requests[controller - 1][channel].done)
 		ret = -1;
 
-	requests[controller - 1][channel].started = 0;
-	requests[controller - 1][channel].done = 0;
+	requests[controller - 1][channel].started = false;
+	requests[controller - 1][channel].done = false;
 	requests[controller - 1][channel].task = NULL;
 
 	spin_lock_irqsave(&freeChannelsLock, flags);
@@ -346,7 +346,7 @@ int iphone_dma_finish(int controller, int channel, int timeout) {
 
 static void dispatchRequest(volatile DMARequest *request) {
 	// TODO: Implement this
-	request->done = 1;
+	request->done = true;
 
 	if(request->task)
 	{
