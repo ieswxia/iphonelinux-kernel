@@ -4,13 +4,18 @@
 #include <mach/iphone-clock.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
+#include <linux/platform_device.h>
+#include <ftl/ftl.h>
 
 #define LOG printk
 #define LOGDBG(format, ...)
 
 // Device
-#define NAND IO_ADDRESS(0x38A00000)
-#define NANDECC IO_ADDRESS(0x38F00000)
+#define NAND_PA 0x38A00000
+#define NANDECC_PA 0x38F00000
+
+#define NAND IO_ADDRESS(NAND_PA)
+#define NANDECC IO_ADDRESS(NANDECC_PA)
 #define NAND_CLOCK_GATE1 0x8
 #define NAND_CLOCK_GATE2 0xC
 #define NANDECC_INT 0x2B
@@ -969,3 +974,67 @@ int nand_setup(void)
 	return 0;
 }
 
+static int __devinit iphone_nand_probe(struct platform_device *pdev)
+{
+	nand_dev = &pdev->dev;
+	return 0;
+}
+
+static int __devexit iphone_nand_remove(struct platform_device *pdev)
+{
+	kfree(aTemporarySBuf);
+	kfree(aTemporaryReadEccBuf);
+	return 0;
+}
+
+static struct resource iphone_nand_resources[] = {
+	[0] = {
+		.start  = NAND_PA,
+		.end    = NAND_PA + 0x1000 - 1,
+		.flags  = IORESOURCE_MEM,
+	},
+	[1] = {
+		.start  = NANDECC_PA,
+		.end    = NANDECC_PA + 0x1000 - 1,
+		.flags  = IORESOURCE_MEM,
+	},
+	[2] = {
+		.start  = NANDECC_INT,
+		.end    = NANDECC_INT,
+		.flags  = IORESOURCE_IRQ,
+	},
+};
+
+struct platform_device iphone_nand = {
+	.name           = "iphone-nand",
+	.id             = -1,
+	.num_resources  = ARRAY_SIZE(iphone_nand_resources),
+	.resource       = iphone_nand_resources,
+};
+
+static struct platform_driver iphone_nand_driver = {
+	.driver         = {
+		.name   = "iphone-nand",
+		.owner  = THIS_MODULE,
+	},
+	.probe          = iphone_nand_probe,
+	.remove         = __devexit_p(iphone_nand_remove),
+	.suspend        = NULL,
+	.resume         = NULL,
+};
+
+static int __init iphone_nand_modinit(void)
+{
+	        return platform_driver_register(&iphone_nand_driver);
+}
+
+static void __exit iphone_nand_modexit(void)
+{
+	        platform_driver_unregister(&iphone_nand_driver);
+}
+
+module_init(iphone_nand_modinit);
+module_exit(iphone_nand_modexit);
+
+MODULE_DESCRIPTION("iPhone NAND Flash Media Interface");
+MODULE_LICENSE("GPL");

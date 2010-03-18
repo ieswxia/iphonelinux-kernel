@@ -2734,6 +2734,7 @@ static void s3c_hsotg_init(struct s3c_hsotg *hsotg)
 
 static void s3c_hsotg_dump(struct s3c_hsotg *hsotg)
 {
+#ifdef IPHONE_DEBUG
 	struct device *dev = hsotg->dev;
 	void __iomem *regs = hsotg->regs;
 	u32 val;
@@ -2776,6 +2777,7 @@ static void s3c_hsotg_dump(struct s3c_hsotg *hsotg)
 
 	dev_info(dev, "DVBUSDIS=0x%08x, DVBUSPULSE=%08x\n",
 		 readl(regs + S3C_DVBUSDIS), readl(regs + S3C_DVBUSPULSE));
+#endif
 }
 
 

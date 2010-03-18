@@ -316,6 +316,7 @@ static bool ftl_next_ctrl_page(void)
 // i < j, usn(p_i) <= usn(p_j)
 static bool determine_block_type(u16 block, u32* highest_usn)
 {
+	bool isSequential = true;
 	u8* pageBuffer = (u8*) kmalloc(NANDGeometry->bytesPerPage, GFP_KERNEL | GFP_DMA);
 	SpareData* spareData = (SpareData*) kmalloc(NANDGeometry->bytesPerSpare, GFP_KERNEL | GFP_DMA);
 
@@ -331,7 +332,7 @@ static bool determine_block_type(u16 block, u32* highest_usn)
 			max = spareData->user.usn;
 
 		if((spareData->user.logicalPageNumber % NANDGeometry->pagesPerSuBlk) != page)
-			break;
+			isSequential = false;
 	}
 
 	kfree(spareData);
@@ -339,10 +340,7 @@ static bool determine_block_type(u16 block, u32* highest_usn)
 
 	*highest_usn = max;
 
-	if(page < 0)
-		return true;
-	else
-		return false;
+	return isSequential;
 }
 
 // Assumptions: same conditions that FTL_Open would have been called in.
@@ -351,6 +349,10 @@ static bool FTL_Restore(void)
 	u16* blockMap = (u16*) kmalloc((NANDGeometry->userSuBlksTotal + 23) * sizeof(u16), GFP_KERNEL);
 	u8* isEmpty = (u8*) kmalloc((NANDGeometry->userSuBlksTotal + 23) * sizeof(u8), GFP_KERNEL);
 	u8* nonSequential = (u8*) kmalloc((NANDGeometry->userSuBlksTotal + 23) * sizeof(u8), GFP_KERNEL);
+	u32* usnA = (u32*) kmalloc(sizeof(u32) * NANDGeometry->pagesPerSuBlk, GFP_KERNEL);
+	u32* usnB = (u32*) kmalloc(sizeof(u32) * NANDGeometry->pagesPerSuBlk, GFP_KERNEL);
+	u32* lpnA = (u32*) kmalloc(sizeof(u32) * NANDGeometry->pagesPerSuBlk, GFP_KERNEL);
+	u32* lpnB = (u32*) kmalloc(sizeof(u32) * NANDGeometry->pagesPerSuBlk, GFP_KERNEL);
 
 	u16* awFreeVb = &pstFTLCxt->awFreeVb[0];
 	u16* pawMapTable = pstFTLCxt->pawMapTable;
@@ -443,7 +445,7 @@ static bool FTL_Restore(void)
 
 	pstFTLCxt->clean = 0;
 
-	for(i = 0; i < 17; ++i)
+	for(i = 0; i < 18; ++i)
 	{
 		pLog[i].wPageOffsets = pstFTLCxt->wPageOffsets + (i * NANDGeometry->pagesPerSuBlk);
 		memset(pLog[i].wPageOffsets, 0xFF, NANDGeometry->pagesPerSuBlk * sizeof(u16));
@@ -531,8 +533,14 @@ static bool FTL_Restore(void)
 		u32 mapCandidateUSN = 0xFFFFFFFF;
 		u16 logCandidate = 0xFFFF;
 		u32 logCandidateUSN = 0xFFFFFFFF;
-
 		u16 candidate;
+
+		if((block % 1000) == 0)
+		{
+			LOG("ftl: restore scanning logical blocks %d - %d\r\n", block,
+					block + (((NANDGeometry->userSuBlksTotal - block) > 1000) ? 999 : (NANDGeometry->userSuBlksTotal - block - 1)));
+		}
+
 		for(candidate = 0; candidate < (NANDGeometry->userSuBlksTotal + 23); ++candidate)
 		{
 			u32 candidateUSN;
@@ -710,88 +718,115 @@ static bool FTL_Restore(void)
 	// map block is written, any further write to it will hit the log block for it
 	// and increment the USN.
 	
+	// This keeps track of the highest USN for all log blocks.
 	highest_usn = 0;
 
 	for(i = 0; i < numLogs; ++i)
 	{
-		// TODO: could be optimized to use previously figured out USN info.
-
 		// Since we always store the highest USN block as the map in step two
 		// to ensure we always end up with the two highest USN blocks, we
 		// could have the ordering swapped. Figure out the correct one.
-		u32 mapUSN;
-		u32 logUSN;
 
-		int mapSeq = determine_block_type(pawMapTable[pLog[i].wLbn], &mapUSN);
-		int logSeq = determine_block_type(pLog[i].wVbn, &logUSN);
+		u16 blockA = pawMapTable[pLog[i].wLbn];
+		u16 blockB = pLog[i].wVbn;
+		bool aSequential = true;
+		bool bSequential = true;
+		u32 aHighestUSN = 0;
+		u32 bHighestUSN = 0;
+		u32* mapBlockUSN;
+		u32* mapBlockLPN;
+		u32* logBlockUSN;
+		u32* logBlockLPN;
 
-		if(mapUSN > logUSN)
+		// Populate information about these two blocks
+
+		for(page = NANDGeometry->pagesPerSuBlk - 1; page >= 0; --page)
 		{
-			// oh, we must have gotten them switched up.
-
-			if(logSeq)
+			int ret = VFL_Read((blockA * NANDGeometry->pagesPerSuBlk) + page, PageBuffer, (u8*) FTLSpareBuffer, true);
+			if(ret == ERROR_EMPTYBLOCK)
+				usnA[page] = 0;
+			else
 			{
-				u32 tmp = pawMapTable[pLog[i].wLbn];
-				pawMapTable[pLog[i].wLbn] = pLog[i].wVbn;
-				pLog[i].wVbn = tmp;
-			} else
-			{
-				// ruh-roh. we can't make our log the map because it's not sequential!
-				LOG("ftl: restore warning -- mapUSN = %d, logUSN = %d, mapSeq = %d, logSeq = %d\n",
-						mapUSN, logUSN, mapSeq, logSeq);
-				// our assumption is seemingly violated. However it does not matter in this
-				// specific case since as a scatter block, the log has to be a log anyway.
+				usnA[page] = FTLSpareBuffer->user.usn;
+				lpnA[page] = FTLSpareBuffer->user.logicalPageNumber;
 
+				if(usnA[page] > aHighestUSN)
+					aHighestUSN = usnA[page];
 
-				if(mapUSN > highest_usn)
-					highest_usn = mapUSN;
-			}
-		} else
-		{
-			// just a sanity check
-			if(!mapSeq)
-			{
-				LOG("ftl: restore failed, Our map must be sequential!\n");
-				goto error_release;
+				if((FTLSpareBuffer->user.logicalPageNumber % NANDGeometry->pagesPerSuBlk) != page)
+					aSequential = false;
 			}
 		}
 
-		// This keeps track of the highest USN for all log blocks.
-		if(logUSN > highest_usn)
-			highest_usn = logUSN;
+		for(page = NANDGeometry->pagesPerSuBlk - 1; page >= 0; --page)
+		{
+			int ret = VFL_Read((blockB * NANDGeometry->pagesPerSuBlk) + page, PageBuffer, (u8*) FTLSpareBuffer, true);
+			if(ret == ERROR_EMPTYBLOCK)
+				usnB[page] = 0;
+			else
+			{
+				usnB[page] = FTLSpareBuffer->user.usn;
+				lpnB[page] = FTLSpareBuffer->user.logicalPageNumber;
 
-		// okay, now we will populate the log block with the correct information. Assumption:
-		// for any page p_i for lpn n in the log block such that there does not exist another
-		// page q_j for lpn n in the block such that j > i, then p_i should be mapped for
-		// lpn n. That is, any page in the log block is more recent than the equivalent page
-		// in the map block. In addition, any page appearing later in the log block is more
-		// recent than any page appearing earlier.
+				if(usnB[page] > bHighestUSN)
+					bHighestUSN = usnB[page];
+
+				if((FTLSpareBuffer->user.logicalPageNumber % NANDGeometry->pagesPerSuBlk) != page)
+					bSequential = false;
+			}
+		}
+
+		// Determine which is which
+		if((aSequential && bSequential && bHighestUSN > aHighestUSN) || aSequential)
+		{
+			pLog[i].wVbn = blockB;
+			pawMapTable[pLog[i].wLbn] = blockA;
+			mapBlockUSN = usnA;
+			logBlockUSN = usnB;
+			mapBlockLPN = lpnA;
+			logBlockLPN = lpnB;
+			if(bHighestUSN > highest_usn)
+				highest_usn = bHighestUSN;
+		} else if((aSequential && bSequential && bHighestUSN <= aHighestUSN) || bSequential)
+		{
+			pLog[i].wVbn = blockA;
+			pawMapTable[pLog[i].wLbn] = blockB;
+			mapBlockUSN = usnB;
+			logBlockUSN = usnA;
+			mapBlockLPN = lpnB;
+			logBlockLPN = lpnA;
+			if(aHighestUSN > highest_usn)
+				highest_usn = aHighestUSN;
+		} else
+		{
+			LOG("ftl: restore failed, we have two non-sequential blocks!\n");
+			goto error_release;
+		}
+		
+		// okay, now we will populate the log block with the correct information.
 
 		for(page = NANDGeometry->pagesPerSuBlk - 1; page >= 0; --page)
 		{
 			int logOffset;
-			int ret = VFL_Read((pLog[i].wVbn * NANDGeometry->pagesPerSuBlk) + page, PageBuffer, (u8*) FTLSpareBuffer, true);
-			if(ret == ERROR_EMPTYBLOCK)
+
+			// check if empty
+			if(logBlockUSN[page] == 0)
 				continue;
 
 			// we set it to after the first non-empty page
 			if(pLog[i].pagesUsed == 0)
 				pLog[i].pagesUsed = page + 1;
 
-			if(ret != 0)
-				continue;
+			logOffset = logBlockLPN[page] % NANDGeometry->pagesPerSuBlk;
 
-			logOffset = FTLSpareBuffer->user.logicalPageNumber % NANDGeometry->pagesPerSuBlk;
-
-			// have we seen this lpn before?
+			// is there a newer copy of this page already in this log block?
 			if(pLog[i].wPageOffsets[logOffset] != 0xFFFF)
-				continue;	// if so, we this is old crap.
-
+				continue;
 
 			// if not, we'll use it since it's the most recent.
 			pLog[i].wPageOffsets[logOffset] = page;
 			++pLog[i].pagesCurrent;
-
+			
 			if(logOffset != page)
 				pLog[i].isSequential = 0;
 		}
@@ -812,6 +847,10 @@ static bool FTL_Restore(void)
 
 	LOG("ftl: restore successful!\n");
 
+	kfree(usnA);
+	kfree(usnB);
+	kfree(lpnA);
+	kfree(lpnB);
 	kfree(blockMap);
 	kfree(nonSequential);
 	kfree(isEmpty);
@@ -819,6 +858,10 @@ static bool FTL_Restore(void)
 	return true;
 
 error_release:	
+	kfree(usnA);
+	kfree(usnB);
+	kfree(lpnA);
+	kfree(lpnB);
 	kfree(blockMap);
 	kfree(nonSequential);
 	kfree(isEmpty);
@@ -1112,12 +1155,23 @@ FTL_Open_Error:
 }
 
 u32 FTL_map_page(FTLCxtLog* pLog, int lbn, int offset) {
+	u32 page;
 	if(pLog && pLog->wPageOffsets[offset] != 0xFFFF) {
 		if(((pLog->wVbn * NANDGeometry->pagesPerSuBlk) + pLog->wPageOffsets[offset] + 1) != 0)
-			return (pLog->wVbn * NANDGeometry->pagesPerSuBlk) + pLog->wPageOffsets[offset];
+		{
+			page = (pLog->wVbn * NANDGeometry->pagesPerSuBlk) + pLog->wPageOffsets[offset];
+#ifdef IPHONE_DEBUG
+			LOG("ftl: calculated page to vbn %d, %d = %d (pLog)\n", pLog->wVbn, offset, page);
+#endif
+			return page;
+		}
 	}
 
-	return (pstFTLCxt->pawMapTable[lbn] * NANDGeometry->pagesPerSuBlk) + offset;
+	page = (pstFTLCxt->pawMapTable[lbn] * NANDGeometry->pagesPerSuBlk) + offset;
+#ifdef IPHONE_DEBUG
+	LOG("ftl: calculated page to vbn %d, %d = %d\n", pstFTLCxt->pawMapTable[lbn], offset, page);
+#endif
+	return page;
 }
 
 static inline FTLCxtLog* ftl_get_log(u16 lbn)
@@ -1134,7 +1188,7 @@ static inline FTLCxtLog* ftl_get_log(u16 lbn)
 	return NULL;
 }
 
-int FTL_Read(int logicalPageNumber, int totalPagesToRead, u8* pBuf)
+int FTL_Read_private(u32 logicalPageNumber, int totalPagesToRead, u8* pBuf)
 {
 	int i;
 	int hasError = false;
@@ -1146,22 +1200,18 @@ int FTL_Read(int logicalPageNumber, int totalPagesToRead, u8* pBuf)
 	int currentLogicalPageNumber;
 	FTLCxtLog* pLog;
 
-	mutex_lock(&ftl_mutex);
-
 	FTLCountsTable.totalPagesRead += totalPagesToRead;
 	++FTLCountsTable.totalReads;
 	pstFTLCxt->totalReadCount++;
 
 	if(!pBuf)
 	{
-		mutex_unlock(&ftl_mutex);
 		return -EINVAL;
 	}
 
-	if(totalPagesToRead == 0 || (logicalPageNumber + totalPagesToRead) >= NANDGeometry->userPagesTotal)
+	if(totalPagesToRead == 0 || (logicalPageNumber + totalPagesToRead) > NANDGeometry->userPagesTotal)
 	{
 		LOG("ftl: invalid input parameters\n");
-		mutex_unlock(&ftl_mutex);
 		return -EINVAL;
 	}
 
@@ -1287,11 +1337,18 @@ FTL_Read_Done:
 		return -EIO;
 	}
 
-	mutex_unlock(&ftl_mutex);
 	return 0;
 
 FTL_Read_Error_Release:
 	LOG("ftl: _FTLRead error!\n");
+	return ret;
+}
+
+int FTL_Read(u32 logicalPageNumber, int totalPagesToRead, u8* pBuf)
+{
+	int ret;
+	mutex_lock(&ftl_mutex);
+	ret = FTL_Read_private(logicalPageNumber, totalPagesToRead, pBuf);
 	mutex_unlock(&ftl_mutex);
 	return ret;
 }
@@ -1679,7 +1736,7 @@ static bool ftl_copy_block(u16 lSrc, u16 vDest)
 
 	for(i = 0; i < NANDGeometry->pagesPerSuBlk; ++i)
 	{
-		int ret = FTL_Read(lSrc * NANDGeometry->pagesPerSuBlk + i, 1, pageBuffer);
+		int ret = FTL_Read_private(lSrc * NANDGeometry->pagesPerSuBlk + i, 1, pageBuffer);
 		memset(spareData, 0xFF, NANDGeometry->bytesPerSpare);
 		if(ret)
 			spareData->eccMark = 0x55;
@@ -1728,6 +1785,8 @@ static bool ftl_compact_scattered(FTLCxtLog* pLog)
 {
 	int error;
 	int i;
+
+	LOG("ftl: ftl_compact_scattered\n");
 
 	++FTLCountsTable.compactScatteredCount;
 
@@ -1830,6 +1889,8 @@ static bool ftl_simple_merge(FTLCxtLog* pLog)
 	int error = false;
 	u16 block;
 
+	LOG("ftl: ftl_simple_merge\n");
+
 	++FTLCountsTable.simpleMergeCount;
 
 	for(i = 0; i < 4; ++i)
@@ -1881,6 +1942,8 @@ static bool ftl_simple_merge(FTLCxtLog* pLog)
 
 static bool ftl_copy_merge(FTLCxtLog* pLog)
 {
+	LOG("ftl: ftl_copy_merge\n");
+
 	if((pLog->isSequential != 1) || (pLog->pagesCurrent != pLog->pagesUsed))
 	{
 		LOG("ftl: attempted ftl_copy_merge on non-sequential scatter block!\n");
@@ -1998,6 +2061,8 @@ bool ftl_auto_wearlevel(void)
 	u16 largestEraseCount = 0;
 	u16 mostErasedFreeBlock = 0;
 	u16 mostErasedFreeBlockIdx = 20;
+	
+	LOG("ftl: ftl_auto_wearlevel\n");
 
 	if(!ftl_mark_unclean())
 	{
@@ -2076,37 +2141,36 @@ bool ftl_auto_wearlevel(void)
 	return true;
 }
 
-int FTL_Write(int logicalPageNumber, int totalPagesToWrite, u8* pBuf) 
+static int FTL_Write_private(u32 logicalPageNumber, int totalPagesToWrite, u8* pBuf) 
 {
 	int i;
 	
-	mutex_lock(&ftl_mutex);
+#ifdef IPHONE_DEBUG
+	LOG("request to write %d pages at %d\r\n", totalPagesToWrite, logicalPageNumber);
+#endif
 
 	FTLCountsTable.totalPagesWritten += totalPagesToWrite;
 	++FTLCountsTable.totalWrites;
 
 	if(!pBuf) {
-		mutex_unlock(&ftl_mutex);
 		return -EINVAL;
 	}
 
-	if(totalPagesToWrite == 0 || (logicalPageNumber + totalPagesToWrite) >= NANDGeometry->userPagesTotal) {
+	if(totalPagesToWrite == 0 || (logicalPageNumber + totalPagesToWrite) > NANDGeometry->userPagesTotal) {
 		LOG("ftl: write has invalid input parameters\n");
-		mutex_unlock(&ftl_mutex);
 		return -EINVAL;
 	}
 
 	if(!ftl_mark_unclean())
 	{
 		LOG("ftl: write could not mark FTL as unclean!\n");
-		mutex_unlock(&ftl_mutex);
 		return -EINVAL;
 	}
 
 	for(i = 0; i < totalPagesToWrite; )
 	{
-		int lbn = logicalPageNumber / NANDGeometry->pagesPerSuBlk;
-		int offset = logicalPageNumber - (lbn * NANDGeometry->pagesPerSuBlk);
+		int lbn = (logicalPageNumber + i) / NANDGeometry->pagesPerSuBlk;
+		int offset = (logicalPageNumber + i) - (lbn * NANDGeometry->pagesPerSuBlk);
 
 		FTLCxtLog* pLog = ftl_prepare_log(lbn);
 
@@ -2181,6 +2245,9 @@ int FTL_Write(int logicalPageNumber, int totalPagesToWrite, u8* pBuf)
 			}
 
 			pstFTLCxt->pawMapTable[lbn] = vblock;
+#ifdef IPHONE_DEBUG
+			LOG("ftl: replacing block with stuff from offset %d\n", (i * (NANDGeometry->bytesPerPage)));
+#endif
 			i += NANDGeometry->pagesPerSuBlk;
 		} else
 		{
@@ -2195,6 +2262,8 @@ int FTL_Write(int logicalPageNumber, int totalPagesToWrite, u8* pBuf)
 				// oh no, this log is full. we have to commit it
 				if(!ftl_merge(pLog))
 				{
+					LOG("ftl: replacing pLog for wVbn %d\n", pLog->wVbn);
+
 					LOG("ftl: write failed to merge in the log!\n");
 					goto error_release;
 				}
@@ -2225,6 +2294,8 @@ int FTL_Write(int logicalPageNumber, int totalPagesToWrite, u8* pBuf)
 				int tries;
 				int abspage;
 				
+				abspage = pLog->wVbn * NANDGeometry->pagesPerSuBlk + origPagesUsed + j;
+
 				memset(FTLSpareBuffer, 0xFF, NANDGeometry->bytesPerSpare);
 				FTLSpareBuffer->user.logicalPageNumber = logicalPageNumber + i + j;
 				FTLSpareBuffer->user.usn = ++pstFTLCxt->nextblockusn;
@@ -2232,8 +2303,6 @@ int FTL_Write(int logicalPageNumber, int totalPagesToWrite, u8* pBuf)
 					FTLSpareBuffer->type1 = 0x41;
 				else
 					FTLSpareBuffer->type1 = 0x40;
-
-				abspage = pLog->wVbn * NANDGeometry->pagesPerSuBlk + origPagesUsed + j;
 
 				for(tries = 0; tries < 4; ++tries)
 				{
@@ -2259,6 +2328,13 @@ int FTL_Write(int logicalPageNumber, int totalPagesToWrite, u8* pBuf)
 
 				if(pLog->isSequential == 1)
 					ftl_check_still_sequential(pLog, offset + j);
+
+#ifdef IPHONE_DEBUG
+				LOG("ftl: filling out block %d log entry %d = %d logical %d with stuff from offset %d\n", pLog->wVbn,
+						origPagesUsed + j,
+						abspage, offset + j, ((i + j) * (NANDGeometry->bytesPerPage)));
+#endif
+
 			}
 
 			i += pagesCanWrite;
@@ -2279,12 +2355,19 @@ int FTL_Write(int logicalPageNumber, int totalPagesToWrite, u8* pBuf)
 		}
 	}
 
-	mutex_unlock(&ftl_mutex);
 	return 0;
 
 error_release:
-	mutex_unlock(&ftl_mutex);
 	return -EINVAL;
+}
+
+int FTL_Write(u32 logicalPageNumber, int totalPagesToWrite, u8* pBuf) 
+{
+	int ret;
+	mutex_lock(&ftl_mutex);
+	ret = FTL_Write_private(logicalPageNumber, totalPagesToWrite, pBuf);
+	mutex_unlock(&ftl_mutex);
+	return ret;
 }
 
 bool ftl_sync(void)

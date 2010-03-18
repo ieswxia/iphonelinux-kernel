@@ -14,10 +14,7 @@ typedef struct SpareData {
 	union {
 		struct {
 			u32 logicalPageNumber;
-			u8 usn;
-			u8 field_5;
-			u8 field_6;
-			u8 field_7;
+			u32 usn;
 		} __attribute__ ((packed)) user;
 
 		struct {
@@ -62,6 +59,8 @@ typedef struct NANDData {
 
 #define ERROR_EMPTYBLOCK 1
 #define ERROR_ECC 2
+
+extern struct platform_device iphone_nand;
 
 int nand_read(int bank, int page, u8* buffer, u8* spare, bool doECC, bool checkBlank);
 int nand_read_multiple(u16* bank, u32* pages, u8* main, SpareData* spare, int pagesCount);

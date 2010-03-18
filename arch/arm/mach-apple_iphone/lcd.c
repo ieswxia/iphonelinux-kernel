@@ -222,6 +222,7 @@ static int iphonefb_setcolreg(unsigned regno, unsigned red, unsigned green, unsi
 	return 0;
 }
 
+
     /*
      *  Frame buffer operations
      */

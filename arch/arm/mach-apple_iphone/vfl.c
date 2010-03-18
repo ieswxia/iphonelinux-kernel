@@ -37,10 +37,12 @@ typedef struct VFLCxt {
 
 extern VFLData1Type VFLData1;
 
-// Global Buffers
+// Shared configuration
 
 NANDData* NANDGeometry;
 NANDFTLData* FTLData;
+
+// Global Buffers
 
 static u8* PageBuffer;
 static u8* SpareBuffer;
@@ -459,6 +461,10 @@ int VFL_Read(u32 virtualPageNumber, u8* buffer, u8* spare, bool empty_ok)
 
 	page = physicalBlock * NANDGeometry->pagesPerBlock + virtualPage;
 
+#ifdef IPHONE_DEBUG
+	LOG("ftl: vfl_read: vpn: %u, bank %d, page %u\n", virtualPageNumber, virtualBank, page);
+#endif
+
 	ret = nand_read(virtualBank, page, buffer, spare, true, true);
 
 	if(!empty_ok && ret == ERROR_EMPTYBLOCK)
@@ -513,9 +519,19 @@ int VFL_Write(u32 virtualPageNumber, u8* buffer, u8* spare)
 
 	page = physicalBlock * NANDGeometry->pagesPerBlock + virtualPage;
 
+#ifdef IPHONE_DEBUG
+	LOG("ftl: vfl_write: vpn: %u, bank %d, page %u\n", virtualPageNumber, virtualBank, page);
+#endif
+
 	ret = nand_write(virtualBank, page, buffer, spare, true);
 	if(ret == 0)
+	{
+		ret = nand_read(virtualBank, page, PageBuffer, SpareBuffer, true, true);
+		if(memcmp(PageBuffer, buffer, NANDGeometry->bytesPerPage) != 0)
+			LOG("WTF, written and read not matching!\r\n");
+
 		return 0;
+	}
 
 	++pstVFLCxt[virtualBank].field_16;
 	vfl_gen_checksum(virtualBank);
@@ -554,6 +570,9 @@ bool VFL_ReadScatteredPagesInVb(u32* virtualPageNumber, int count, u8* main, Spa
 		virtual_page_number_to_virtual_address(dwVpn, &ScatteredBankNumberBuffer[i], &virtualBlock, &virtualPage);
 		physicalBlock = virtual_block_to_physical_block(ScatteredBankNumberBuffer[i], virtualBlock);
 		ScatteredPageNumberBuffer[i] = physicalBlock * NANDGeometry->pagesPerBlock + virtualPage;
+#ifdef IPHONE_DEBUG
+		LOG("ftl: vfl_read (scattered): vpn: %u, bank  %d, page %u\n", virtualPageNumber[i], ScatteredBankNumberBuffer[i], ScatteredPageNumberBuffer[i]);
+#endif
 	}
 
 	ret = nand_read_multiple(ScatteredBankNumberBuffer, ScatteredPageNumberBuffer, main, spare, count);
@@ -725,6 +744,9 @@ int VFL_Init(void)
 		if(ScatteredPageNumberBuffer == NULL || ScatteredBankNumberBuffer == NULL)
 			return -1;
 	}
+
+	PageBuffer = (u8*) kmalloc(NANDGeometry->bytesPerPage, GFP_KERNEL | GFP_DMA);
+	SpareBuffer = (u8*) kmalloc(NANDGeometry->bytesPerSpare, GFP_KERNEL | GFP_DMA);
 
 	curVFLusnInc = 0;
 

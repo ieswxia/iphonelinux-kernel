@@ -38,6 +38,8 @@
 
 #include <linux/platform_device.h>
 
+#include <ftl/nand.h>
+
 static struct map_desc iphone_io_desc[] __initdata = {
 	{
 		.virtual	=  IO_ADDRESS(0x3CC00000),
@@ -160,6 +162,7 @@ void __init iphone_init(void)
 	printk("iphone: platform init\r\n");
 	iphone_dma_setup();
 
+	platform_device_register(&iphone_nand);
 	platform_device_register(&s3c_device_usb_hsotg);
 }
 
