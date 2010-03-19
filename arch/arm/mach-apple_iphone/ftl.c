@@ -1668,9 +1668,6 @@ static FTLCxtLog* ftl_prepare_log(u16 lbn)
 
 	pLog->usn = pstFTLCxt->nextblockusn - 1;
 
-	if(pstFTLCxt->nextblockusn == 1)
-		memset(pstFTLCxt->pLog, 0, sizeof(FTLCxtLog) * 17);
-
 	return pLog;
 }
 
@@ -2253,7 +2250,9 @@ static int FTL_Write_private(u32 logicalPageNumber, int totalPagesToWrite, u8* p
 
 			if(pLog->pagesUsed == NANDGeometry->pagesPerSuBlk)
 			{
+#ifdef IPHONE_DEBUG
 				int orig = pLog->wVbn;
+#endif
 
 				// oh no, this log is full. we have to commit it
 				if(!ftl_merge(pLog))
