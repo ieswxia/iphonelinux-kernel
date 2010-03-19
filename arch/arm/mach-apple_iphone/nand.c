@@ -3,6 +3,7 @@
 #include <mach/iphone-dma.h>
 #include <mach/iphone-clock.h>
 #include <linux/dma-mapping.h>
+#include <linux/sched.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <ftl/ftl.h>
@@ -139,6 +140,7 @@ static int wait_for_ecc_interrupt(int timeout)
 	u64 startTime = iphone_microtime();
 	u32 mask = (1 << (NANDECC_INT - VIC_InterruptSeparator));
 	while((readl(VIC1 + VICRAWINTR) & mask) == 0) {
+		yield();
 		if(iphone_has_elapsed(startTime, timeout * 1000)) {
 			return -ETIMEDOUT;
 		}
@@ -306,6 +308,7 @@ static int wait_for_ready(int timeout) {
 
 	startTime = iphone_microtime();
 	while((readl(NAND + FMCSTAT) & FMCSTAT_READY) == 0) {
+		yield();
 		if(iphone_has_elapsed(startTime, timeout * 1000)) {
 			return -ETIMEDOUT;
 		}
@@ -323,6 +326,7 @@ static int wait_for_address_done(int timeout) {
 
 	startTime = iphone_microtime();
 	while((readl(NAND + FMCSTAT) & (1 << 2)) == 0) {
+		yield();
 		if(iphone_has_elapsed(startTime, timeout * 1000)) {
 			return -ETIMEDOUT;
 		}
@@ -345,6 +349,7 @@ static int wait_for_command_done(int bank, int timeout) {
 	toTest = 1 << (bank + 4);
 
 	while((readl(NAND + FMCSTAT) & toTest) == 0) {
+		yield();
 		if(iphone_has_elapsed(startTime, timeout * 1000)) {
 			return -ETIMEDOUT;
 		}
@@ -364,6 +369,7 @@ static int wait_for_transfer_done(int timeout) {
 
 	startTime = iphone_microtime();
 	while((readl(NAND + FMCSTAT) & (1 << 3)) == 0) {
+		yield();
 		if(iphone_has_elapsed(startTime, timeout * 1000)) {
 			return -ETIMEDOUT;
 		}

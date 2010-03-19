@@ -1155,23 +1155,14 @@ FTL_Open_Error:
 }
 
 u32 FTL_map_page(FTLCxtLog* pLog, int lbn, int offset) {
-	u32 page;
 	if(pLog && pLog->wPageOffsets[offset] != 0xFFFF) {
 		if(((pLog->wVbn * NANDGeometry->pagesPerSuBlk) + pLog->wPageOffsets[offset] + 1) != 0)
 		{
-			page = (pLog->wVbn * NANDGeometry->pagesPerSuBlk) + pLog->wPageOffsets[offset];
-#ifdef IPHONE_DEBUG
-			LOG("ftl: calculated page to vbn %d, %d = %d (pLog)\n", pLog->wVbn, offset, page);
-#endif
-			return page;
+			return (pLog->wVbn * NANDGeometry->pagesPerSuBlk) + pLog->wPageOffsets[offset];
 		}
 	}
 
-	page = (pstFTLCxt->pawMapTable[lbn] * NANDGeometry->pagesPerSuBlk) + offset;
-#ifdef IPHONE_DEBUG
-	LOG("ftl: calculated page to vbn %d, %d = %d\n", pstFTLCxt->pawMapTable[lbn], offset, page);
-#endif
-	return page;
+	return (pstFTLCxt->pawMapTable[lbn] * NANDGeometry->pagesPerSuBlk) + offset;
 }
 
 static inline FTLCxtLog* ftl_get_log(u16 lbn)
@@ -1669,6 +1660,10 @@ static FTLCxtLog* ftl_prepare_log(u16 lbn)
 		pLog->pagesUsed = 0;
 		pLog->pagesCurrent = 0;
 		pLog->isSequential = 1;
+
+#ifdef IPHONE_DEBUG
+		LOG("ftl: new log for lbn %d is %d\n", pLog->wLbn, pLog->wVbn);
+#endif
 	}
 
 	pLog->usn = pstFTLCxt->nextblockusn - 1;
@@ -2144,7 +2139,7 @@ bool ftl_auto_wearlevel(void)
 static int FTL_Write_private(u32 logicalPageNumber, int totalPagesToWrite, u8* pBuf) 
 {
 	int i;
-	
+
 #ifdef IPHONE_DEBUG
 	LOG("request to write %d pages at %d\r\n", totalPagesToWrite, logicalPageNumber);
 #endif
@@ -2252,18 +2247,17 @@ static int FTL_Write_private(u32 logicalPageNumber, int totalPagesToWrite, u8* p
 		} else
 		{
 			int pagesCanWrite;
-			int origPagesUsed;
 			int j;
 
 			// we'll have to use the log since we're not replacing the whole block
 
 			if(pLog->pagesUsed == NANDGeometry->pagesPerSuBlk)
 			{
+				int orig = pLog->wVbn;
+
 				// oh no, this log is full. we have to commit it
 				if(!ftl_merge(pLog))
 				{
-					LOG("ftl: replacing pLog for wVbn %d\n", pLog->wVbn);
-
 					LOG("ftl: write failed to merge in the log!\n");
 					goto error_release;
 				}
@@ -2275,6 +2269,9 @@ static int FTL_Write_private(u32 logicalPageNumber, int totalPagesToWrite, u8* p
 					LOG("ftl: write failed to prepare log after merging!\n");
 					goto error_release;
 				}
+#ifdef IPHONE_DEBUG
+				LOG("ftl: replaced pLog for wLbn %d wVbn %d => %d\n", pLog->wLbn, orig, pLog->wVbn);
+#endif
 			}
 
 			pagesCanWrite = totalPagesToWrite - i;
@@ -2287,28 +2284,27 @@ static int FTL_Write_private(u32 logicalPageNumber, int totalPagesToWrite, u8* p
 			if(pagesCanWrite > (NANDGeometry->pagesPerSuBlk - offset))
 				pagesCanWrite = NANDGeometry->pagesPerSuBlk - offset;
 
-			origPagesUsed = pLog->pagesUsed;
-
 			for(j = 0; j < pagesCanWrite; ++j)
 			{
 				int tries;
 				int abspage;
 				
-				abspage = pLog->wVbn * NANDGeometry->pagesPerSuBlk + origPagesUsed + j;
-
 				memset(FTLSpareBuffer, 0xFF, NANDGeometry->bytesPerSpare);
 				FTLSpareBuffer->user.logicalPageNumber = logicalPageNumber + i + j;
 				FTLSpareBuffer->user.usn = ++pstFTLCxt->nextblockusn;
-				if(((origPagesUsed + j) == (NANDGeometry->pagesPerSuBlk - 1)) && pLog->isSequential)
+				if((pLog->pagesUsed == (NANDGeometry->pagesPerSuBlk - 1)) && pLog->isSequential)
 					FTLSpareBuffer->type1 = 0x41;
 				else
 					FTLSpareBuffer->type1 = 0x40;
 
 				for(tries = 0; tries < 4; ++tries)
 				{
+					abspage = pLog->wVbn * NANDGeometry->pagesPerSuBlk + pLog->pagesUsed;
+
 					if(VFL_Write(abspage, 
 							pBuf + ((i + j) * (NANDGeometry->bytesPerPage)), (u8*) FTLSpareBuffer) == 0)
 						break;
+					++pLog->pagesUsed;
 				}
 
 				if(tries == 4)
@@ -2323,16 +2319,16 @@ static int FTL_Write_private(u32 logicalPageNumber, int totalPagesToWrite, u8* p
 					++pLog->pagesCurrent;
 				}
 
-				pLog->wPageOffsets[offset + j] = origPagesUsed + j;
+				pLog->wPageOffsets[offset + j] = pLog->pagesUsed;
 				++pLog->pagesUsed;
 
 				if(pLog->isSequential == 1)
 					ftl_check_still_sequential(pLog, offset + j);
 
 #ifdef IPHONE_DEBUG
-				LOG("ftl: filling out block %d log entry %d = %d logical %d with stuff from offset %d\n", pLog->wVbn,
-						origPagesUsed + j,
-						abspage, offset + j, ((i + j) * (NANDGeometry->bytesPerPage)));
+				LOG("ftl: filling out block %d log entry %d = %d logical (%d, %d) with stuff from offset %d\n", pLog->wVbn,
+						pLog->pagesUsed - 1,
+						abspage, pLog->wLbn, offset + j, ((i + j) * (NANDGeometry->bytesPerPage)));
 #endif
 
 			}

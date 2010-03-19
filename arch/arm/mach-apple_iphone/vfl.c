@@ -33,6 +33,8 @@ typedef struct VFLCxt {
 #define FTL_ID_V2 0x43303034
 #define FTL_ID_V3 0x43303035
 
+//#define IPHONE_DEBUG
+
 // Shared Counters
 
 extern VFLData1Type VFLData1;
@@ -523,15 +525,16 @@ int VFL_Write(u32 virtualPageNumber, u8* buffer, u8* spare)
 	LOG("ftl: vfl_write: vpn: %u, bank %d, page %u\n", virtualPageNumber, virtualBank, page);
 #endif
 
+	ret = nand_read(virtualBank, page, PageBuffer, SpareBuffer, true, true);
+	if(ret != ERROR_EMPTYBLOCK)
+	{
+		LOG("ftl: WTF trying to write to a non-blank page! vpn = %u bank = %d page = %u\r\n", virtualPageNumber, virtualBank, page);
+		return -1;
+	}
+
 	ret = nand_write(virtualBank, page, buffer, spare, true);
 	if(ret == 0)
-	{
-		ret = nand_read(virtualBank, page, PageBuffer, SpareBuffer, true, true);
-		if(memcmp(PageBuffer, buffer, NANDGeometry->bytesPerPage) != 0)
-			LOG("WTF, written and read not matching!\r\n");
-
 		return 0;
-	}
 
 	++pstVFLCxt[virtualBank].field_16;
 	vfl_gen_checksum(virtualBank);
