@@ -22,7 +22,7 @@ typedef enum PowerSupplyType {
 	PowerSupplyTypeUSBBrick1000mA
 } PowerSupplyType;
 
-static int iphone_pmu_get_reg(int reg) {
+/*static int iphone_pmu_get_reg(int reg) {
 	uint8_t registers[1];
 	uint8_t out[1];
 
@@ -30,6 +30,14 @@ static int iphone_pmu_get_reg(int reg) {
 
 	iphone_i2c_rx(PMU_I2C_BUS, PMU_GETADDR, registers, 1, out, 1);
 	return out[0];
+}*/
+
+static int iphone_pmu_get_regs(int reg, uint8_t* out, int count) {
+	uint8_t registers[1];
+
+	registers[0] = reg;
+
+	return iphone_i2c_rx(PMU_I2C_BUS, PMU_GETADDR, registers, 1, out, count);
 }
 
 static int iphone_pmu_write_reg(int reg, int data, int verify) {
@@ -177,54 +185,6 @@ static int iphone_pmu_get_battery_voltage(void) {
 	return query_adc(0);
 }*/
 
-static int iphone_pmu_get_seconds(void) {
-	return bcd2bin(iphone_pmu_get_reg(PMU_RTCSC) & PMU_RTCSC_MASK);
-}
-
-static int iphone_pmu_get_minutes(void) {
-	return bcd2bin(iphone_pmu_get_reg(PMU_RTCMN) & PMU_RTCMN_MASK);
-}
-
-static int iphone_pmu_get_hours(void) {
-	return bcd2bin(iphone_pmu_get_reg(PMU_RTCHR) & PMU_RTCHR_MASK);
-}
-
-static int iphone_pmu_get_day(void) {
-	return bcd2bin(iphone_pmu_get_reg(PMU_RTCDT) & PMU_RTCDT_MASK);
-}
-
-static int iphone_pmu_get_month(void) {
-	return iphone_pmu_get_reg(PMU_RTCMT) & PMU_RTCMT_MASK;
-}
-
-static int iphone_pmu_get_year(void) {
-	return bcd2bin(iphone_pmu_get_reg(PMU_RTCYR) & PMU_RTCYR_MASK);
-}
-
-static int iphone_pmu_set_seconds(int num) {
-	return iphone_pmu_write_reg(PMU_RTCSC, bin2bcd(num) & PMU_RTCSC_MASK, 0);
-}
-
-static int iphone_pmu_set_minutes(int num) {
-	return iphone_pmu_write_reg(PMU_RTCMN, bin2bcd(num) & PMU_RTCMN_MASK, 0);
-}
-
-static int iphone_pmu_set_hours(int num) {
-	return iphone_pmu_write_reg(PMU_RTCHR, bin2bcd(num) & PMU_RTCHR_MASK, 0);
-}
-
-static int iphone_pmu_set_day(int num) {
-	return iphone_pmu_write_reg(PMU_RTCDT, bin2bcd(num) & PMU_RTCDT_MASK, 0);
-}
-
-static int iphone_pmu_set_month(int num) {
-	return iphone_pmu_write_reg(PMU_RTCMT, num & PMU_RTCMT_MASK, 0);
-}
-
-static int iphone_pmu_set_year(int num) {
-	return iphone_pmu_write_reg(PMU_RTCYR, bin2bcd(num) & PMU_RTCYR_MASK, 0);
-}
-
 /*static int iphone_pmu_get_dayofweek(void) {
 	return iphone_pmu_get_reg(PMU_RTCWD) & PMU_RTCWD_MASK;
 }
@@ -233,26 +193,54 @@ static int iphone_pmu_set_dayofweek(int num) {
 	return iphone_pmu_write_reg(PMU_RTCWD, num & PMU_RTCWD_MASK, 0);
 }*/
 
+static unsigned long iphone_pmu_get_epoch(void)
+{
+	unsigned long secs;
+	s32 offset;
+	u8 rtc_data[PMU_RTCYR - PMU_RTCSC + 1];
+	u8 rtc_data2[PMU_RTCYR - PMU_RTCSC + 1];
+
+	do
+	{
+		iphone_pmu_get_regs(PMU_RTCSC, rtc_data, PMU_RTCYR - PMU_RTCSC + 1);
+		iphone_pmu_get_regs(PMU_RTCSC, rtc_data2, PMU_RTCYR - PMU_RTCSC + 1);
+	} while(rtc_data2[0] != rtc_data[0]);
+
+	secs = mktime(
+			2000 + bcd2bin(rtc_data[PMU_RTCYR - PMU_RTCSC] & PMU_RTCYR_MASK),
+			rtc_data[PMU_RTCMT - PMU_RTCSC] & PMU_RTCMT_MASK,
+	     		bcd2bin(rtc_data[PMU_RTCDT - PMU_RTCSC] & PMU_RTCDT_MASK),
+			bcd2bin(rtc_data[PMU_RTCHR - PMU_RTCSC] & PMU_RTCHR_MASK),
+			bcd2bin(rtc_data[PMU_RTCMN - PMU_RTCSC] & PMU_RTCMN_MASK),
+			bcd2bin(rtc_data[0] & PMU_RTCSC_MASK)
+			);
+
+	iphone_pmu_get_regs(0x6B, (u8*) &offset, sizeof(offset));
+
+	secs += offset;
+	return secs;
+}
+
+
 static int iphone_rtc_gettime(struct device *dev, struct rtc_time *rtc_tm)
 {
-	rtc_tm->tm_sec = iphone_pmu_get_seconds();
-	rtc_tm->tm_min = iphone_pmu_get_minutes();
-	rtc_tm->tm_hour = iphone_pmu_get_hours();
-	rtc_tm->tm_mday = iphone_pmu_get_day();
-	rtc_tm->tm_mon = iphone_pmu_get_month() - 1;
-	rtc_tm->tm_year = iphone_pmu_get_year() + 101;
-
+	rtc_time_to_tm(iphone_pmu_get_epoch(), rtc_tm);
 	return 0;
 }
 
 static int iphone_rtc_settime(struct device *dev, struct rtc_time *rtc_tm)
 {
-	iphone_pmu_set_seconds(rtc_tm->tm_sec);
-	iphone_pmu_set_minutes(rtc_tm->tm_min);
-	iphone_pmu_set_hours(rtc_tm->tm_hour);
-	iphone_pmu_set_day(rtc_tm->tm_mday);
-	iphone_pmu_set_month(rtc_tm->tm_mon + 1);
-	iphone_pmu_set_year(rtc_tm->tm_year - 101);
+	unsigned long secs;
+	unsigned long cur;
+	s32 offset;
+	rtc_tm_to_time(rtc_tm, &secs);
+	cur = iphone_pmu_get_epoch();
+	offset = secs - cur;
+
+	iphone_pmu_write_reg(0x6B, offset & 0xFF, 0); 
+	iphone_pmu_write_reg(0x6C, (offset >> 8) & 0xFF, 0); 
+	iphone_pmu_write_reg(0x6D, (offset >> 16) & 0xFF, 0); 
+	iphone_pmu_write_reg(0x6E, (offset >> 24) & 0xFF, 0); 
 
 	return 0;
 }
