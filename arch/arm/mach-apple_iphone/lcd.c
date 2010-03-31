@@ -79,31 +79,26 @@ static struct fb_var_screeninfo iphonefb_var __devinitdata = {
 	.yres_virtual = 480,
 	.xoffset = 0,
 	.yoffset = 0,
-	.bits_per_pixel = 32,
+	.bits_per_pixel = 16,
 	.grayscale = 0,
 	.red = {
-		.offset = 0,
-		.length = 8,
+		.offset = 11,
+		.length = 5,
 		.msb_right = 0
 	},
 	.blue = {
-		.offset = 8,
-		.length = 8,
+		.offset = 0,
+		.length = 5,
 		.msb_right = 0
 	},
 	.green = {
-		.offset = 16,
-		.length = 8,
+		.offset = 5,
+		.length = 6,
 		.msb_right = 0
 	},
-	.transp = {
-		.offset = 0,
-		.length = 0,
-		.msb_right = 0
-	},
-	.width = 50,
-	.height = 76,
-	.vmode = FB_VMODE_NONINTERLACED
+	.width = 320,
+	.height = 480,
+	.activate = FB_ACTIVATE_NOW
 };
 
 /*
@@ -134,7 +129,7 @@ static struct fb_fix_screeninfo iphonefb_fix __devinitdata = {
 	.xpanstep =	0,
 	.ypanstep =	0,
 	.ywrapstep =	0, 
-	.line_length =	320 * 4, 
+	.line_length =	320 * 2, 
 	.accel =	FB_ACCEL_NONE,
 };
 
@@ -213,13 +208,25 @@ static int iphonefb_release(struct fb_info *info, int user)
     return 0;
 }
 
+static inline u32 convert_bitfield(int val, struct fb_bitfield *bf)
+{
+	unsigned int mask = (1 << bf->length) - 1;
+
+	return (val >> (16 - bf->length) & mask) << bf->offset;
+}
+
 static int iphonefb_setcolreg(unsigned regno, unsigned red, unsigned green, unsigned blue, unsigned transp, struct fb_info *info) {
-	if(regno < 16) {
+	if (regno < 16) {
 		u32* pal = (u32*) info->pseudo_palette;
-		pal[regno] = ((red & 0xFF) << 16) | ((green & 0xFF) << 8) | (blue & 0xFF);
+		pal[regno] = convert_bitfield(blue, &info->var.blue) |
+			convert_bitfield(green, &info->var.green) |
+			convert_bitfield(red, &info->var.red);
+		return 0;
+	}
+	else {
+		return 1;
 	}
 
-	return 0;
 }
 
 
@@ -256,7 +263,7 @@ static int __init iphonefb_probe(struct platform_device *pdev)
      * Dynamically allocate info and par
      */
     info = framebuffer_alloc(sizeof(struct iphonefb_par), device);
-    framebuffer_virtual_memory = kmalloc(iphonefb_var.xres * iphonefb_var.yres * 4, GFP_KERNEL);
+    framebuffer_virtual_memory = kmalloc(iphonefb_var.xres * iphonefb_var.yres * 2, GFP_KERNEL);
     iphone_set_fb_address(DEFAULT_WINDOW_NUM, framebuffer_virtual_memory);
 
     if (!info) {
