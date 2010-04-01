@@ -319,12 +319,11 @@ int iphone_dma_finish(int controller, int channel, int timeout) {
 	unsigned long timeout_jiffies;
 
 	timeout_jiffies = msecs_to_jiffies(timeout) + 1;
+	requests[controller - 1][channel].task = current;
+
 	set_current_state(TASK_INTERRUPTIBLE);
-	while(!requests[controller - 1][channel].done)
-	{
-		requests[controller - 1][channel].task = current;
-		timeout = schedule_timeout(timeout_jiffies);
-	}
+	if(!requests[controller - 1][channel].done)
+		timeout_jiffies = schedule_timeout(timeout_jiffies);
 	set_current_state(TASK_RUNNING);
 
 	if(!requests[controller - 1][channel].done)

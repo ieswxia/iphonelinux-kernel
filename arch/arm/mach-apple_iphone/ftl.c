@@ -3,6 +3,7 @@
 #include <linux/slab.h>
 #include <ftl/vfl.h>
 #include <ftl/ftl.h>
+#include <mach/iphone-clock.h>
 
 #define LOG printk
 #define LOGDBG(format, ...)
@@ -85,6 +86,19 @@ typedef enum VFLStruct {
 
 VFLData1Type VFLData1;
 static uint8_t VFLData5[0xF8];
+
+#ifdef FTL_PROFILE
+u64 TotalWriteTime;
+u64 TotalSyncTime;
+extern u64 Time_wait_for_ecc_interrupt;
+extern u64 Time_wait_for_ready;
+extern u64 Time_wait_for_address_done;
+extern u64 Time_wait_for_command_done;
+extern u64 Time_wait_for_transfer_done;
+extern u64 Time_wait_for_nand_bank_ready;
+extern u64 Time_nand_write;
+extern u64 Time_iphone_dma_finish;
+#endif
 
 // Global Buffers
 
@@ -2137,6 +2151,7 @@ static int FTL_Write_private(u32 logicalPageNumber, int totalPagesToWrite, u8* p
 {
 	int i;
 
+	//LOG("FTL_Write start\n");
 #ifdef IPHONE_DEBUG
 	LOG("request to write %d pages at %d\r\n", totalPagesToWrite, logicalPageNumber);
 #endif
@@ -2350,17 +2365,55 @@ static int FTL_Write_private(u32 logicalPageNumber, int totalPagesToWrite, u8* p
 		}
 	}
 
+	//LOG("FTL_Write end\n");
 	return 0;
 
 error_release:
+	//LOG("FTL_Write end\n");
 	return -EINVAL;
 }
 
 int FTL_Write(u32 logicalPageNumber, int totalPagesToWrite, u8* pBuf) 
 {
 	int ret;
+
+#ifdef FTL_PROFILE
+	u64 startTime;
+#endif
+
 	mutex_lock(&ftl_mutex);
+
+#ifdef FTL_PROFILE
+	Time_wait_for_ecc_interrupt = 0;
+	Time_wait_for_ready = 0;
+	Time_wait_for_address_done = 0;
+	Time_wait_for_command_done = 0;
+	Time_wait_for_transfer_done = 0;
+	Time_wait_for_nand_bank_ready = 0;
+	Time_nand_write = 0;
+	Time_iphone_dma_finish = 0;
+	TotalWriteTime = 0;
+	startTime = iphone_microtime();
+#endif
+
 	ret = FTL_Write_private(logicalPageNumber, totalPagesToWrite, pBuf);
+
+#ifdef FTL_PROFILE
+	TotalWriteTime += iphone_microtime() - startTime;
+	LOG("write complete in %llu: ecc = %llu, ready = %llu, addr = %llu, cmd = %llu, xfer = %llu, bankrdy = %llu, dma = %llu, write = %llu, active = %llu\n",
+			TotalWriteTime,
+			Time_wait_for_ecc_interrupt,
+			Time_wait_for_ready,
+			Time_wait_for_address_done,
+			Time_wait_for_command_done,
+			Time_wait_for_transfer_done,
+			Time_wait_for_nand_bank_ready,
+			Time_iphone_dma_finish,
+			Time_nand_write,
+			TotalWriteTime - Time_wait_for_ecc_interrupt - Time_wait_for_ready - Time_wait_for_address_done - Time_wait_for_command_done - Time_wait_for_transfer_done - Time_wait_for_nand_bank_ready - Time_iphone_dma_finish
+			);
+#endif
+
 	mutex_unlock(&ftl_mutex);
 	return ret;
 }
@@ -2369,10 +2422,20 @@ bool ftl_sync(void)
 {
 	int tries;
 
+#ifdef FTL_PROFILE
+	u64 startTime;
+#endif
+
 	mutex_lock(&ftl_mutex);
+	//LOG("ftl_sync start\n");
+
+#ifdef FTL_PROFILE
+	startTime = iphone_microtime();
+#endif
 
 	if(pstFTLCxt->clean)
 	{
+		LOG("ftl_sync end\n");
 		mutex_unlock(&ftl_mutex);
 		return true;
 	}
@@ -2393,6 +2456,11 @@ bool ftl_sync(void)
 	{
 		if(ftl_commit_cxt())
 		{
+			//LOG("ftl_sync end\n");
+
+#ifdef FTL_PROFILE
+			TotalSyncTime += iphone_microtime() - startTime;
+#endif
 			mutex_unlock(&ftl_mutex);
 			return true;
 		} else
@@ -2402,6 +2470,12 @@ bool ftl_sync(void)
 			pstFTLCxt->FTLCtrlPage = (block * NANDGeometry->pagesPerSuBlk) + NANDGeometry->pagesPerSuBlk - 1;	
 		}
 	}
+
+	//LOG("ftl_sync end\n");
+
+#ifdef FTL_PROFILE
+	TotalSyncTime += iphone_microtime() - startTime;
+#endif
 
 	mutex_unlock(&ftl_mutex);
 	return false;

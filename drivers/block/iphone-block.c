@@ -4,6 +4,7 @@
 #include <ftl/nand.h>
 #include <linux/sched.h>
 #include <linux/workqueue.h>
+#include <linux/delay.h>
 
 // 2^9 = 512
 #define SECTOR_SHIFT 9
@@ -28,6 +29,7 @@ static struct
 static void ftl_workqueue_handler(struct work_struct* work);
 
 DECLARE_WORK(ftl_workqueue, &ftl_workqueue_handler);
+static struct workqueue_struct* ftl_wq;
 
 static void iphone_block_scatter_gather(struct request* req, bool gather)
 {
@@ -65,6 +67,8 @@ static void ftl_workqueue_handler(struct work_struct* work)
 	unsigned long flags;
 	bool dir_out;
 	int ret;
+
+	//printk("ftl_workqueue_handler enter\n");
 
 	while(true)
 	{
@@ -109,10 +113,14 @@ static void ftl_workqueue_handler(struct work_struct* work)
 
 				if(dir_out)
 				{
+					//printk("FTL_Write enter: %p\n", iphone_block_device.req);
 					ret = FTL_Write(lpn, numPages, iphone_block_device.bounceBuffer);
+					//printk("FTL_Write exit: %p\n", iphone_block_device.req);
 				} else
 				{
+					//printk("FTL_Read enter: %p\n", iphone_block_device.req);
 					ret = FTL_Read(lpn, numPages, iphone_block_device.bounceBuffer);
+					//printk("FTL_Read exit: %p\n", iphone_block_device.req);
 				}
 
 				if(!dir_out)
@@ -141,7 +149,7 @@ static void ftl_workqueue_handler(struct work_struct* work)
 static int iphone_block_busy(struct request_queue *q)
 {
 	int ret = (iphone_block_device.req == NULL) ? 0 : 1;
-	//printk("iphone_block_busy: %d\n", ret);
+	printk("iphone_block_busy: %d\n", ret);
 	return ret;
 }
 
@@ -189,8 +197,8 @@ static void iphone_block_request(struct request_queue* q)
 
 	iphone_block_device.req = blk_fetch_request(q);
 
-	//printk("scheduling work\n");
-	schedule_work(&ftl_workqueue);
+	//printk("scheduling work: %p\n", iphone_block_device.req);
+	queue_work(ftl_wq, &ftl_workqueue);
 }
 
 static struct block_device_operations iphone_block_fops =
@@ -205,6 +213,9 @@ static struct block_device_operations iphone_block_fops =
 static int __init iphone_block_init(void)
 {
 	int i;
+
+	ftl_wq = create_workqueue("iphone_ftl_worker");
+
 	if(ftl_setup() != 0)
 		return -EIO;
 
@@ -218,6 +229,9 @@ static int __init iphone_block_init(void)
 	}
 
 	spin_lock_init(&iphone_block_device.lock);
+
+	iphone_block_device.processing = false;
+	iphone_block_device.req = NULL;
 
 	iphone_block_device.bounceBuffer = (u8*) kmalloc(NANDGeometry->pagesPerSuBlk * NANDGeometry->bytesPerPage, GFP_KERNEL | GFP_DMA);
 	if(!iphone_block_device.bounceBuffer)
@@ -271,6 +285,7 @@ static void __exit iphone_block_exit(void)
 	put_disk(iphone_block_device.gd);
 	blk_cleanup_queue(iphone_block_device.queue);
 	unregister_blkdev(iphone_block_device.majorNum, "nand");
+	flush_workqueue(ftl_wq);
 	kfree(iphone_block_device.bounceBuffer);
 	ftl_sync();
 	printk("iphone-block: block device unregistered\n");

@@ -132,6 +132,18 @@ static u8* aTemporarySBuf;
 
 struct device *nand_dev;
 
+#ifdef FTL_PROFILE
+static bool InWrite = false;
+u64 Time_wait_for_ecc_interrupt = 0;
+u64 Time_wait_for_ready = 0;
+u64 Time_wait_for_address_done = 0;
+u64 Time_wait_for_command_done = 0;
+u64 Time_wait_for_transfer_done = 0;
+u64 Time_wait_for_nand_bank_ready = 0;
+u64 Time_nand_write = 0;
+u64 Time_iphone_dma_finish = 0;
+#endif
+
 #define VIC1 IO_ADDRESS(0x38E01000)
 #define VICRAWINTR 0x8
 #define VIC_InterruptSeparator 0x20
@@ -147,6 +159,10 @@ static int wait_for_ecc_interrupt(int timeout)
 	}
 
 	writel(1, NANDECC + NANDECC_CLEARINT);
+
+#ifdef FTL_PROFILE
+	if(InWrite) Time_wait_for_ecc_interrupt += iphone_microtime() - startTime;
+#endif
 
 	if((readl(VIC1 + VICRAWINTR) & mask) == 0) {
 		return 0;
@@ -314,6 +330,10 @@ static int wait_for_ready(int timeout) {
 		}
 	}
 
+#ifdef FTL_PROFILE
+	if(InWrite) Time_wait_for_ready += iphone_microtime() - startTime;
+#endif
+
 	return 0;
 }
 
@@ -333,6 +353,10 @@ static int wait_for_address_done(int timeout) {
 	}
 
 	writel(1 << 2, NAND + FMCSTAT);
+
+#ifdef FTL_PROFILE
+	if(InWrite) Time_wait_for_address_done += iphone_microtime() - startTime;
+#endif
 
 	return 0;
 }
@@ -357,6 +381,10 @@ static int wait_for_command_done(int bank, int timeout) {
 
 	writel(toTest, NAND + FMCSTAT);
 
+#ifdef FTL_PROFILE
+	if(InWrite) Time_wait_for_command_done += iphone_microtime() - startTime;
+#endif
+
 	return 0;
 }
 
@@ -376,6 +404,10 @@ static int wait_for_transfer_done(int timeout) {
 	}
 
 	writel(1 << 3, NAND + FMCSTAT);
+
+#ifdef FTL_PROFILE
+	if(InWrite) Time_wait_for_transfer_done += iphone_microtime() - startTime;
+#endif
 
 	return 0;
 }
@@ -450,6 +482,11 @@ static int wait_for_nand_bank_ready(int bank)
 
 	writel(0, NAND + NAND_CMD);
 	wait_for_ready(500);
+
+#ifdef FTL_PROFILE
+	if(InWrite) Time_wait_for_nand_bank_ready += iphone_microtime() - startTime;
+#endif
+
 	return 0;
 }
 
@@ -457,6 +494,10 @@ static int transferFromFlash(void* buffer, int size) {
 	int controller = 0;
 	int channel = 0;
 	dma_addr_t dma;
+
+#ifdef FTL_PROFILE
+	u64 startTime;
+#endif
 
 	if((((u32)buffer) & 0x3) != 0) {
 		// the buffer needs to be aligned for DMA, last two bits have to be clear
@@ -472,10 +513,18 @@ static int transferFromFlash(void* buffer, int size) {
 	iphone_dma_request(IPHONE_DMA_NAND, 4, 4, IPHONE_DMA_MEMORY, 4, 4, &controller, &channel);
 	iphone_dma_perform(IPHONE_DMA_NAND, (u32)dma, size, 0, &controller, &channel);
 
+#ifdef FTL_PROFILE
+	startTime = iphone_microtime();
+#endif
+
 	if(iphone_dma_finish(controller, channel, 500) != 0) {
 		LOG("nand: dma timed out\n");
 		return -ETIMEDOUT;
 	}
+
+#ifdef FTL_PROFILE
+	if(InWrite) Time_iphone_dma_finish += iphone_microtime() - startTime;
+#endif
 
 	if(wait_for_transfer_done(500) != 0) {
 		LOG("nand: waiting for transfer done timed out\n");
@@ -494,6 +543,10 @@ static int transferToFlash(void* buffer, int size) {
 	int channel = 0;
 	dma_addr_t dma;
 
+#ifdef FTL_PROFILE
+	u64 startTime;
+#endif
+
 	if((((u32)buffer) & 0x3) != 0) {
 		// the buffer needs to be aligned for DMA, last two bits have to be clear
 		return -EINVAL;
@@ -508,10 +561,18 @@ static int transferToFlash(void* buffer, int size) {
 	iphone_dma_request(IPHONE_DMA_MEMORY, 4, 4, IPHONE_DMA_NAND, 4, 4, &controller, &channel);
 	iphone_dma_perform((u32)dma, IPHONE_DMA_NAND, size, 0, &controller, &channel);
 
+#ifdef FTL_PROFILE
+	startTime = iphone_microtime();
+#endif
+
 	if(iphone_dma_finish(controller, channel, 500) != 0) {
 		LOG("nand: dma timed out\n");
 		return -ETIMEDOUT;
 	}
+
+#ifdef FTL_PROFILE
+	if(InWrite) Time_iphone_dma_finish += iphone_microtime() - startTime;
+#endif
 
 	if(wait_for_transfer_done(500) != 0) {
 		LOG("nand: waiting for transfer done timed out\n");
@@ -552,6 +613,10 @@ int nand_read(int bank, int page, u8* buffer, u8* spare, bool doECC, bool checkB
 
 	if(buffer == NULL && spare == NULL)
 		return -EINVAL;
+
+#ifdef FTL_PROFILE
+	InWrite = true;
+#endif
 
 	writel(((WEHighHoldTime & FMCTRL_TWH_MASK) << FMCTRL_TWH_SHIFT) | ((WPPulseTime & FMCTRL_TWP_MASK) << FMCTRL_TWP_SHIFT)
 		| (1 << (banksTable[bank] + 1)) | FMCTRL0_ON | FMCTRL0_WPB, NAND + FMCTRL0);
@@ -627,16 +692,28 @@ int nand_read(int bank, int page, u8* buffer, u8* spare, bool doECC, bool checkB
 
 	if(eccFailed || checkBlank) {
 		if(isEmptyBlock(aTemporarySBuf, Geometry.bytesPerSpare) != 0) {
+#ifdef FTL_PROFILE
+			InWrite = false;
+#endif
 			return ERROR_EMPTYBLOCK;
 		} else if(eccFailed) {
+#ifdef FTL_PROFILE
+			InWrite = false;
+#endif
 			return -EIO;
 		}
 	}
 
+#ifdef FTL_PROFILE
+	InWrite = false;
+#endif
 	return 0;
 
 FIL_read_error:
 	nand_bank_reset(bank, 100);
+#ifdef FTL_PROFILE
+	InWrite = false;
+#endif
 	return -EIO;
 }
 
@@ -713,6 +790,10 @@ FIL_erase_error:
 
 int nand_write(int bank, int page, u8* buffer, u8* spare, bool doECC)
 {
+#ifdef FTL_PROFILE
+	u64 startTime;
+#endif
+
 	if(bank >= Geometry.banksTotal)
 		return -EINVAL;
 
@@ -722,10 +803,18 @@ int nand_write(int bank, int page, u8* buffer, u8* spare, bool doECC)
 	if(buffer == NULL && spare == NULL)
 		return -EINVAL;
 
+#ifdef FTL_PROFILE
+	InWrite = true;
+	startTime = iphone_microtime();
+#endif
+
 	if(doECC) {
 		memcpy(aTemporarySBuf, spare, sizeof(SpareData));
 		if(generateECC(ECCType, buffer, aTemporarySBuf + sizeof(SpareData)) != 0) {
 			LOG("nand: Unexpected error during ECC generation\n");
+#ifdef FTL_PROFILE
+			InWrite = false;
+#endif
 			return -EINVAL;
 		}
 
@@ -778,14 +867,33 @@ int nand_write(int bank, int page, u8* buffer, u8* spare, bool doECC)
 	while((nand_read_status() & (1 << 6)) == 0);
 
 	if(nand_read_status() & 0x1)
+	{
+#ifdef FTL_PROFILE
+		Time_nand_write += iphone_microtime() - startTime;
+		InWrite = false;
+#endif
 		return -1;
-	else
+	} else
+	{
+#ifdef FTL_PROFILE
+		Time_nand_write += iphone_microtime() - startTime;
+		InWrite = false;
+#endif
 		return 0;
+	}
 
+#ifdef FTL_PROFILE
+	Time_nand_write += iphone_microtime() - startTime;
+	InWrite = false;
+#endif
 	return 0;
 
 FIL_write_error:
 	nand_bank_reset(bank, 100);
+#ifdef FTL_PROFILE
+	Time_nand_write += iphone_microtime() - startTime;
+	InWrite = false;
+#endif
 	return -EIO;
 }
 
