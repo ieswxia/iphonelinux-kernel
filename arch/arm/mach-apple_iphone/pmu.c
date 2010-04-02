@@ -6,7 +6,7 @@
 #include <linux/bcd.h>
 #include <mach/pmu.h>
 #include "i2c.h"
-#include "gpio.h"
+#include <mach/gpio.h>
 
 typedef struct PMURegisterData {
 	uint8_t reg;

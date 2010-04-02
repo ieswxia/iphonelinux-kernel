@@ -146,6 +146,10 @@ config MMC_SDHCI_S3C_DMA
 
 	  YMMV.
 
+config SDIO_IPHONE
+	tristate "iPhone SDIO support"
+	depends on MACH_APPLE_IPHONE
+
 config MMC_OMAP
 	tristate "TI OMAP Multimedia Card Interface support"
 	depends on ARCH_OMAP

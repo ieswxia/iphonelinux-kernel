@@ -6,7 +6,6 @@
 
 #include <mach/iphone-clock.h>
 #include <mach/gpio.h>
-#include "gpio.h"
 
 #define GET_BITS(x, start, length) ((((u32)(x)) << (32 - ((start) + (length)))) >> (32 - (length)))
 

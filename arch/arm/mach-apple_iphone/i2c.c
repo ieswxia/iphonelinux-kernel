@@ -6,7 +6,7 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include "i2c.h"
-#include "gpio.h"
+#include <mach/gpio.h>
 #include <mach/iphone-clock.h>
 #include <mach/hardware.h>
 #include <mach/i2c.h>
