@@ -52,6 +52,7 @@ struct iphone_sdio
 	void __iomem*		regs;
 	struct mmc_host*	mmc;
 	struct mmc_request*	mrq;
+	bool			irq_enabled;
 };
 
 static struct iphone_sdio* sdio_driver;
@@ -61,18 +62,27 @@ static void sdio_workqueue_handler(struct work_struct* work);
 DECLARE_WORK(sdio_workqueue, &sdio_workqueue_handler);
 static struct workqueue_struct* sdio_wq;
 
+static inline void sdio_check_for_irq(struct iphone_sdio* sdio)
+{
+	if(sdio->irq_enabled)
+	{
+		u32 irqstat = sdio_get_reg(SDIO_IRQ);
+
+		//printk("irqstat: %x\n", irqstat);
+		if(irqstat & 2)
+		{
+			sdio_set_reg(SDIO_IRQ, 2);
+			//printk("got sdio IRQ!\n");
+			mmc_signal_sdio_irq(sdio->mmc);
+		}
+	}
+}
+
 static irqreturn_t sdio_irq(int irq, void *pw)
 {
 	struct iphone_sdio* sdio = pw;
 
-	u32 status = sdio_get_reg(SDIO_IRQ);
-	sdio_set_reg(SDIO_IRQ, status);
-
-	// SDIO irq, find handler
-	if(status & 2)
-	{
-		mmc_signal_sdio_irq(sdio->mmc);
-	}
+	sdio_check_for_irq(sdio);
 
 	return IRQ_HANDLED;
 }
@@ -190,8 +200,11 @@ static int sdio_init(struct iphone_sdio* sdio)
 		return -1;
 	}
 
-	// Enable all IRQs
-	sdio_set_reg(SDIO_IRQMASK, 3);
+	// Enable checking for SDIO irqs
+	sdio_set_reg(SDIO_CSR, 2);
+
+	// Enable xfer done IRQ
+	sdio_set_reg(SDIO_IRQMASK, 1);
 
 	return 0;
 }
@@ -262,11 +275,14 @@ static void sdio_workqueue_handler(struct work_struct* work)
 
 	//dev_info(sdio->dev, "executing command %d, arg %08x\n", cmd->opcode, cmd->arg);
 
+	sdio_clear_state(sdio);
+
 	ret = sdio_wait_for_ready(sdio, 100);
 	if(ret)
+	{
+		dev_info(sdio->dev, "problem waiting for ready");
 		goto sdio_error;
-
-	sdio_clear_state(sdio);
+	}
 
 	if(cmd->data)
 	{
@@ -274,7 +290,7 @@ static void sdio_workqueue_handler(struct work_struct* work)
 		struct scatterlist *sg;
 		int segs = 0;
 
-		//dev_info(sdio->dev, "setting up data\n");
+		//dev_info(sdio->dev, "setting up data command %d, arg %08x, blklen = %d, numblk = %d\n", cmd->opcode, cmd->arg, cmd->data->blksz, cmd->data->blocks);
 
 		if(cmd->data->flags & MMC_DATA_READ)
 			segs = dma_map_sg(sdio->dev, cmd->data->sg, cmd->data->sg_len, DMA_FROM_DEVICE);
@@ -305,14 +321,15 @@ static void sdio_workqueue_handler(struct work_struct* work)
 		if(cmd->data->blocks == 1)
 			sdio_set_reg(SDIO_CTRL, sdio_get_reg(SDIO_CTRL) & ~0x8000);
 		else
-			sdio_set_reg(SDIO_CTRL, sdio_get_reg(SDIO_CTRL) | ~0x8000);
+			sdio_set_reg(SDIO_CTRL, sdio_get_reg(SDIO_CTRL) | 0x8000);
 
 		// reset the FIFOs
 		sdio_set_reg(SDIO_DCTRL, 3);
 		sdio_set_reg(SDIO_DCTRL, 0);
 
 		// disable block transfer done IRQ since we will be polling
-		sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) & ~3);
+		//sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) & ~3);
+		sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) & ~1);
 	}
 	
 	sdio_set_reg(SDIO_ARGU, cmd->arg);
@@ -321,11 +338,15 @@ static void sdio_workqueue_handler(struct work_struct* work)
 
 	ret = sdio_wait_for_cmd_ready(sdio, 100);
 	if(ret)
+	{
+		dev_info(sdio->dev, "problem waiting for cmd ready");
 		goto sdio_error;
+	}
 
 	status = sdio_execute_command(sdio, 100);
 	if(status < 0)
 	{
+		dev_info(sdio->dev, "problem with execute command");
 		ret = status;
 		goto sdio_error;
 	}
@@ -335,6 +356,7 @@ static void sdio_workqueue_handler(struct work_struct* work)
 	// check for timeout
 	if(status & 1)
 	{
+		dev_info(sdio->dev, "controller signalled command timeout");
 		ret = -ETIMEDOUT;
 		goto sdio_error;
 	}
@@ -390,13 +412,15 @@ static void sdio_workqueue_handler(struct work_struct* work)
 
 		// re-enable IRQs
 		sdio_set_reg(SDIO_IRQ, 1);
-		sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) | 3);
+		//sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) | 3);
+		sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) | 1);
 
 		status = sdio_get_reg(SDIO_DSTA) >> 19;
-		if(status != 2)
+		if(((cmd->data->flags & MMC_DATA_WRITE) && status != 2) || ((cmd->data->flags & MMC_DATA_READ) && status != 0))
 		{
-			dev_info(sdio->dev, "Data error\n");
+			dev_info(sdio->dev, "Data error for command %d, arg %08x, blklen = %d, numblk = %d, dsta=0x%08x\n", cmd->opcode, cmd->arg, cmd->data->blksz, cmd->data->blocks, sdio_get_reg(SDIO_DSTA));
 			cmd->data->error = -EILSEQ;
+			cmd->data->bytes_xfered = 0;
 			sdio->mrq = NULL;
 			mmc_request_done(sdio->mmc, mrq);
 			return;
@@ -407,17 +431,31 @@ static void sdio_workqueue_handler(struct work_struct* work)
 		else if(cmd->data->flags & MMC_DATA_WRITE)
 			dma_unmap_sg(sdio->dev, cmd->data->sg, 1, DMA_TO_DEVICE);
 		
-		sdio_set_reg(SDIO_CTRL, sdio_get_reg(SDIO_CTRL) | ~0x8000);
+		sdio_set_reg(SDIO_CTRL, sdio_get_reg(SDIO_CTRL) & ~0x8000);
+
+		cmd->data->error = 0;
+		cmd->data->bytes_xfered = cmd->data->blksz * cmd->data->blocks;
+
+		//dev_info(sdio->dev, "data successful!\n");
 	}
 	
 	sdio->mrq = NULL;
 	mmc_request_done(sdio->mmc, mrq);
+
+	if(cmd->data)
+		sdio_check_for_irq(sdio);
+
+	//dev_info(sdio->dev, "command successful!\n");
 	return;
 
 sdio_error:
 	dev_info(sdio->dev, "execution error %d for command %d, arg %08x\n", ret, cmd->opcode, cmd->arg);
 	cmd->error = ret;
-	if(cmd->data) cmd->data->error = ret;
+	if(cmd->data)
+	{
+		cmd->data->error = ret;
+		cmd->data->bytes_xfered = 0;
+	}
 	sdio->mrq = NULL;
 	mmc_request_done(sdio->mmc, mrq);
 }
@@ -454,26 +492,35 @@ static void iphone_sdio_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	if(shift > 7)
 		shift = 7;
 
-	//dev_info(sdio->dev, "set_ios clock = %u (%d), width %d\n", ios->clock, shift, 1 << ios->bus_width);
-
 	sdio_set_reg(SDIO_CLKDIV, 1 << shift);
 
 	if(ios->bus_width == MMC_BUS_WIDTH_1)
-		sdio_set_reg(SDIO_CTRL, sdio_get_reg(SDIO_CTRL) | (1 << 2));
-	else
-		sdio_set_reg(SDIO_CTRL, sdio_get_reg(SDIO_CTRL) & (~(1 << 2)));
+		sdio_set_reg(SDIO_CTRL, sdio_get_reg(SDIO_CTRL) & (~(3 << 2)));
+	else if(ios->bus_width == MMC_BUS_WIDTH_4)
+		sdio_set_reg(SDIO_CTRL, (sdio_get_reg(SDIO_CTRL) & (~(3 << 2))) | (1 << 2));
+	else if(ios->bus_width == MMC_BUS_WIDTH_8)
+		sdio_set_reg(SDIO_CTRL, (sdio_get_reg(SDIO_CTRL) & (~(3 << 2))) | (2 << 2));
+
+	//dev_info(sdio->dev, "set_ios clock = %u (%d), width %d, ctrl = %08x\n", ios->clock, shift, 1 << ios->bus_width, sdio_get_reg(SDIO_CTRL));
 }
 
 static void iphone_enable_sdio_irq(struct mmc_host *mmc, int enable)
 {
 	struct iphone_sdio* sdio = mmc_priv(mmc);
 
-	dev_info(sdio->dev, "enable irq\n");
-	// FIXME: Is this enough?
+	//dev_info(sdio->dev, "enable irq: %d\n", enable);
+
 	if(enable)
-		sdio_set_reg(SDIO_CSR, 2);
-	else
-		sdio_set_reg(SDIO_CSR, 0);
+	{
+		sdio->irq_enabled = true;
+		sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) | 2);
+	} else
+	{
+		sdio->irq_enabled = false;
+		sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) & ~2);
+	}
+
+	sdio_check_for_irq(sdio);
 }
 
 static struct mmc_host_ops iphone_sdio_ops = {
@@ -507,6 +554,7 @@ static int __devinit iphone_sdio_probe(struct platform_device* pdev)
 	sdio = mmc_priv(mmc);
 	sdio_driver = sdio;
 
+	sdio->irq_enabled = false;
 	sdio->mrq = NULL;
 	sdio->dev = dev;
 	sdio->mmc = mmc;
