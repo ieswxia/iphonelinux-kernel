@@ -75,6 +75,7 @@
 #define CMD_802_11_SLEEP_PARAMS                 0x0066
 #define CMD_802_11_INACTIVITY_TIMEOUT           0x0067
 #define CMD_802_11_SLEEP_PERIOD                 0x0068
+#define CMD_802_11_CAL_DATA_EXT                 0x006D
 #define CMD_802_11_TPC_CFG                      0x0072
 #define CMD_802_11_PA_CFG                       0x0073
 #define CMD_802_11_FW_WAKE_METHOD               0x0074
@@ -832,6 +833,15 @@ struct cmd_ds_802_11_eeprom_access {
 	/* firmware says it returns a maximum of 20 bytes */
 #define LBS_EEPROM_READ_LEN 20
 	u8 value[LBS_EEPROM_READ_LEN];
+} __attribute__ ((packed));
+
+struct cmd_ds_802_11_cal_data_ext {
+	struct cmd_header hdr;
+	__le16 action;
+	__le16 revision;
+	__le16 len;
+#define LBS_CAL_DATA_LEN 0x400
+	u8 data[LBS_CAL_DATA_LEN];
 } __attribute__ ((packed));
 
 struct cmd_ds_802_11_tpc_cfg {

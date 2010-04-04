@@ -501,7 +501,7 @@ static void iphone_sdio_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	else if(ios->bus_width == MMC_BUS_WIDTH_8)
 		sdio_set_reg(SDIO_CTRL, (sdio_get_reg(SDIO_CTRL) & (~(3 << 2))) | (2 << 2));
 
-	//dev_info(sdio->dev, "set_ios clock = %u (%d), width %d, ctrl = %08x\n", ios->clock, shift, 1 << ios->bus_width, sdio_get_reg(SDIO_CTRL));
+	//dev_info(sdio->dev, "set_ios clock = %u (%d), width %d, ctrl = %08x, vdd = %d\n", ios->clock, shift, 1 << ios->bus_width, sdio_get_reg(SDIO_CTRL), ios->vdd);
 }
 
 static void iphone_enable_sdio_irq(struct mmc_host *mmc, int enable)
@@ -601,7 +601,7 @@ static int __devinit iphone_sdio_probe(struct platform_device* pdev)
 	mmc->ops = &iphone_sdio_ops;
 	mmc->f_min = FREQUENCY_PERIPHERAL / 256;
 	mmc->f_max = FREQUENCY_PERIPHERAL / 2;
-	mmc->ocr_avail = ~0x7F;
+	mmc->ocr_avail = ~0x7f;
 
 	mmc->max_phys_segs = 1;
 	mmc->max_hw_segs = 1;
