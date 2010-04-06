@@ -705,8 +705,25 @@ static int lbs_set_mac_reg(struct lbs_private* priv, u16 offset, u32 value)
 	offval.value = value;
 
 	ret = lbs_prepare_and_send_command(priv,
-				CMD_RF_REG_ACCESS, CMD_ACT_SET,
+				CMD_MAC_REG_ACCESS, CMD_ACT_SET,
 				CMD_OPTION_WAITFORRSP, 0, &offval);
+
+	return ret;
+}
+
+static int lbs_get_mac_reg(struct lbs_private* priv, u16 offset, u32* value)
+{
+	struct lbs_offset_value offval;
+	int ret;
+
+	offval.offset = offset;
+	offval.value = 0;
+
+	ret = lbs_prepare_and_send_command(priv,
+				CMD_MAC_REG_ACCESS, CMD_ACT_GET,
+				CMD_OPTION_WAITFORRSP, 0, &offval);
+
+	*value = priv->offsetvalue.value;
 
 	return ret;
 }
@@ -720,7 +737,7 @@ static int lbs_set_bbp_reg(struct lbs_private* priv, u16 offset, u8 value)
 	offval.value = value;
 
 	ret = lbs_prepare_and_send_command(priv,
-				CMD_RF_REG_ACCESS, CMD_ACT_SET,
+				CMD_BBP_REG_ACCESS, CMD_ACT_SET,
 				CMD_OPTION_WAITFORRSP, 0, &offval);
 
 	return ret;
@@ -756,6 +773,7 @@ static int lbs_setup_firmware(struct lbs_private *priv)
 {
 	struct sleep_params sp;
 	int ret = -1;
+	u32 macv;
 	s16 curlevel = 0, minlevel = 0, maxlevel = 0;
 
 	lbs_deb_enter(LBS_DEB_FW);
@@ -791,17 +809,17 @@ static int lbs_setup_firmware(struct lbs_private *priv)
 
 	// 2G = 0, 3G = 1, iPod = 2
 
-	// 2G config (hangs on 2G)
-/*	lbs_set_mac_reg(priv, 0xA5AC, 0xC8);
+	// 2G config
+	lbs_set_mac_reg(priv, 0xA5AC, 0xC8);
 	lbs_set_mac_reg(priv, 0xA5B0, 0xC8 << 2);
 	lbs_set_mac_reg(priv, 0xA5A8, 0xAF << 3);
 	lbs_set_mac_reg(priv, 0xA5B4, 0xAF << 4);
 	lbs_set_mac_reg(priv, 0xA5A4, 0xAF << 4);
 	lbs_set_mac_reg(priv, 0xA58C, 0x40214);
 	lbs_set_mac_reg(priv, 0xA5A0, 0x524D);
-	lbs_set_mac_reg(priv, 0xA5F0, 0xA2271814);*/
+	lbs_set_mac_reg(priv, 0xA5F0, 0xA2271814);
 
-	// 3G config (doesn't seem to make a difference on 2G)
+	// 3G config
 /*	lbs_set_mac_reg(priv, 0xA58C, 0x40212);
 	lbs_set_mac_reg(priv, 0xA5A0, 0x524D);
 	lbs_set_mac_reg(priv, 0xA5F0, 0xA2271814);
@@ -810,10 +828,10 @@ static int lbs_setup_firmware(struct lbs_private *priv)
 	lbs_set_rf_reg(priv, 0x32, 0x5D);
 	lbs_set_rf_reg(priv, 0x6B, 0xAE);*/
 
-	// iPod touch config (works the best on 2G, probably because it disables bluetooth coexistence)
-	lbs_set_mac_reg(priv, 0xA58C, 0x40212);
+	// iPod touch config
+/*	lbs_set_mac_reg(priv, 0xA58C, 0x40212);
 	lbs_set_mac_reg(priv, 0xA5A0, 0xD24D);
-	lbs_set_mac_reg(priv, 0xA5F0, 0xA027181C);
+	lbs_set_mac_reg(priv, 0xA5F0, 0xA027181C);*/
 
 	/* Read power levels if available */
 	ret = lbs_get_tx_power(priv, &curlevel, &minlevel, &maxlevel);
@@ -824,6 +842,9 @@ static int lbs_setup_firmware(struct lbs_private *priv)
 	}
 
 	lbs_set_bbp_reg(priv, 0x4E, 0x1B);
+
+	lbs_get_mac_reg(priv, 0x2048, &macv);
+	lbs_set_mac_reg(priv, 0x2048, macv | 0x80);
 
 done:
 	lbs_deb_leave_args(LBS_DEB_FW, "ret %d", ret);
