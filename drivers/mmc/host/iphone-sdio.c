@@ -53,14 +53,17 @@ struct iphone_sdio
 	struct mmc_host*	mmc;
 	struct mmc_request*	mrq;
 	bool			irq_enabled;
+	int			errors;
 	spinlock_t		lock;
 };
 
 static struct iphone_sdio* sdio_driver;
 
 static void sdio_workqueue_handler(struct work_struct* work);
+static void sdio_reset_handler(struct work_struct* work);
 
 DECLARE_WORK(sdio_workqueue, &sdio_workqueue_handler);
+DECLARE_DELAYED_WORK(sdio_reset_workqueue, &sdio_reset_handler);
 static struct workqueue_struct* sdio_wq;
 
 static inline void sdio_check_for_irq(struct iphone_sdio* sdio)
@@ -474,21 +477,52 @@ static void sdio_workqueue_handler(struct work_struct* work)
 
 sdio_error:
 	dev_info(sdio->dev, "execution error %d for command %d, arg %08x\n", ret, cmd->opcode, cmd->arg);
+	++sdio->errors;
 	cmd->error = ret;
 	if(cmd->data)
 	{
 		cmd->data->error = ret;
 		cmd->data->bytes_xfered = 0;
 	}
+
 	sdio->mrq = NULL;
 	mmc_request_done(sdio->mmc, mrq);
+
+	if(sdio->errors > 3)
+	{
+		dev_err(sdio->dev, "too many errors -- signalling Instrument of God and notifying MMC core\n");
+		sdio->errors = -1;
+		mmc_detect_change(sdio->mmc, 0);
+		schedule_delayed_work(&sdio_reset_workqueue, msecs_to_jiffies(500));
+	}
+	
 	ExecutingCommand = 0;
+}
+
+static void sdio_reset_handler(struct work_struct* work)
+{
+	struct iphone_sdio* sdio = sdio_driver;
+	dev_err(sdio->dev, "Instrument of God activated, resetting SDIO and notifying MMC core\n");
+	sdio_reset(sdio);
+	sdio->errors = 0;
+	mmc_detect_change(sdio->mmc, 0);
 }
 
 static void iphone_sdio_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	struct iphone_sdio* sdio = mmc_priv(mmc);
-	
+
+	if(unlikely(sdio->errors == -1))
+	{
+		dev_err(sdio->dev, "got request while SDIO is in a dead state\n");
+		mrq->cmd->error = -EINVAL;
+		if(mrq->cmd->data)
+			mrq->cmd->data->error = -EINVAL;
+
+		mmc_request_done(mmc, mrq);
+		return;
+	}
+
 	if(unlikely(sdio->mrq != NULL))
 	{
 		dev_err(sdio->dev, "got request before last request was finished!\n");
@@ -587,6 +621,7 @@ static int __devinit iphone_sdio_probe(struct platform_device* pdev)
 	sdio->mrq = NULL;
 	sdio->dev = dev;
 	sdio->mmc = mmc;
+	sdio->errors = 0;
 	spin_lock_init(&sdio->lock);
 	platform_set_drvdata(pdev, sdio);
 
