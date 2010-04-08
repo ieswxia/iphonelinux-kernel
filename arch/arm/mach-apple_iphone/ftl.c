@@ -1579,15 +1579,19 @@ error_release:
 static bool ftl_mark_unclean(void)
 {
 	int i;
-	u8* pageBuffer = (u8*) kmalloc(NANDGeometry->bytesPerPage, GFP_KERNEL | GFP_DMA);
-	u8* spareBuffer = (u8*) kmalloc(NANDGeometry->bytesPerSpare, GFP_KERNEL | GFP_DMA);
-	if(!pageBuffer || !spareBuffer) {
-		LOG("ftl: ftl_mark_unclean: out of memory\n");
-		return false;
-	}
+	u8* pageBuffer;
+	u8* spareBuffer;
 
 	if(!pstFTLCxt->clean)
 		return true;
+
+	pageBuffer = (u8*) kmalloc(NANDGeometry->bytesPerPage, GFP_KERNEL | GFP_DMA);
+	spareBuffer = (u8*) kmalloc(NANDGeometry->bytesPerSpare, GFP_KERNEL | GFP_DMA);
+	if(!pageBuffer || !spareBuffer)
+	{
+		LOG("ftl: ftl_mark_unclean: out of memory\n");
+		return false;
+	}
 
 	for(i = 0; i < 3; ++i)
 	{

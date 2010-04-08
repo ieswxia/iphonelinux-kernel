@@ -138,7 +138,7 @@ void __init iphone_init_irq(void)
 		set_irq_flags(i, IRQF_VALID);
 
 		set_irq_chip(VIC_InterruptSeparator + i, &iphone_irq_fasteoi_chip);
-		set_irq_handler(VIC_InterruptSeparator + i, handle_level_irq);
+		set_irq_handler(VIC_InterruptSeparator + i, handle_fasteoi_irq);
 		set_irq_flags(VIC_InterruptSeparator + i, IRQF_VALID);
 	}
 

@@ -53,6 +53,7 @@ struct iphone_sdio
 	struct mmc_host*	mmc;
 	struct mmc_request*	mrq;
 	bool			irq_enabled;
+	spinlock_t		lock;
 };
 
 static struct iphone_sdio* sdio_driver;
@@ -64,6 +65,10 @@ static struct workqueue_struct* sdio_wq;
 
 static inline void sdio_check_for_irq(struct iphone_sdio* sdio)
 {
+	unsigned long flags;
+	bool gotIRQ = false;
+
+	spin_lock_irqsave(&sdio->lock, flags);
 	if(sdio->irq_enabled)
 	{
 		u32 irqstat = sdio_get_reg(SDIO_IRQ);
@@ -72,17 +77,26 @@ static inline void sdio_check_for_irq(struct iphone_sdio* sdio)
 		if(irqstat & 2)
 		{
 			sdio_set_reg(SDIO_IRQ, 2);
+			gotIRQ = true;
 			//printk("got sdio IRQ!\n");
-			mmc_signal_sdio_irq(sdio->mmc);
 		}
 	}
+	spin_unlock_irqrestore(&sdio->lock, flags);
+
+	if(gotIRQ)
+		mmc_signal_sdio_irq(sdio->mmc);
 }
 
+int InSDIOIRQ = 0;
 static irqreturn_t sdio_irq(int irq, void *pw)
 {
 	struct iphone_sdio* sdio = pw;
 
+	InSDIOIRQ = 1;
+	//printk("in sdio irq\n");
 	sdio_check_for_irq(sdio);
+	//printk("out of sdio irq\n");
+	InSDIOIRQ = 0;
 
 	return IRQ_HANDLED;
 }
@@ -204,7 +218,7 @@ static int sdio_init(struct iphone_sdio* sdio)
 	sdio_set_reg(SDIO_CSR, 2);
 
 	// Enable xfer done IRQ
-	sdio_set_reg(SDIO_IRQMASK, 1);
+	sdio_set_reg(SDIO_IRQMASK, 0);
 
 	return 0;
 }
@@ -257,6 +271,8 @@ static inline u32 setup_cmd(struct mmc_command* cmd)
 	return x;
 }
 
+int ExecutingCommand = 0;
+
 static void sdio_workqueue_handler(struct work_struct* work)
 {
 	int ret;
@@ -271,9 +287,13 @@ static void sdio_workqueue_handler(struct work_struct* work)
 		return;
 	}
 
+	ExecutingCommand = 1;
+
 	cmd = mrq->cmd;
 
 	//dev_info(sdio->dev, "executing command %d, arg %08x\n", cmd->opcode, cmd->arg);
+
+	sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) & ~2);
 
 	sdio_clear_state(sdio);
 
@@ -329,7 +349,7 @@ static void sdio_workqueue_handler(struct work_struct* work)
 
 		// disable block transfer done IRQ since we will be polling
 		//sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) & ~3);
-		sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) & ~1);
+		//sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) & ~1);
 	}
 	
 	sdio_set_reg(SDIO_ARGU, cmd->arg);
@@ -413,7 +433,7 @@ static void sdio_workqueue_handler(struct work_struct* work)
 		// re-enable IRQs
 		sdio_set_reg(SDIO_IRQ, 1);
 		//sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) | 3);
-		sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) | 1);
+		//sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) | 1);
 
 		status = sdio_get_reg(SDIO_DSTA) >> 19;
 		if(((cmd->data->flags & MMC_DATA_WRITE) && status != 2) || ((cmd->data->flags & MMC_DATA_READ) && status != 0))
@@ -442,9 +462,13 @@ static void sdio_workqueue_handler(struct work_struct* work)
 	sdio->mrq = NULL;
 	mmc_request_done(sdio->mmc, mrq);
 
-	if(cmd->data)
+	if(sdio->irq_enabled)
+	{
+		sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) | 2);
 		sdio_check_for_irq(sdio);
+	}
 
+	ExecutingCommand = 0;
 	//dev_info(sdio->dev, "command successful!\n");
 	return;
 
@@ -458,6 +482,7 @@ sdio_error:
 	}
 	sdio->mrq = NULL;
 	mmc_request_done(sdio->mmc, mrq);
+	ExecutingCommand = 0;
 }
 
 static void iphone_sdio_request(struct mmc_host *mmc, struct mmc_request *mrq)
@@ -506,21 +531,25 @@ static void iphone_sdio_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 static void iphone_enable_sdio_irq(struct mmc_host *mmc, int enable)
 {
+	unsigned long flags;
 	struct iphone_sdio* sdio = mmc_priv(mmc);
 
 	//dev_info(sdio->dev, "enable irq: %d\n", enable);
 
 	if(enable)
 	{
+		spin_lock_irqsave(&sdio->lock, flags);
 		sdio->irq_enabled = true;
 		sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) | 2);
+		spin_unlock_irqrestore(&sdio->lock, flags);
+		sdio_check_for_irq(sdio);
 	} else
 	{
+		spin_lock_irqsave(&sdio->lock, flags);
 		sdio->irq_enabled = false;
 		sdio_set_reg(SDIO_IRQMASK, sdio_get_reg(SDIO_IRQMASK) & ~2);
+		spin_unlock_irqrestore(&sdio->lock, flags);
 	}
-
-	sdio_check_for_irq(sdio);
 }
 
 static struct mmc_host_ops iphone_sdio_ops = {
@@ -558,6 +587,7 @@ static int __devinit iphone_sdio_probe(struct platform_device* pdev)
 	sdio->mrq = NULL;
 	sdio->dev = dev;
 	sdio->mmc = mmc;
+	spin_lock_init(&sdio->lock);
 	platform_set_drvdata(pdev, sdio);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
