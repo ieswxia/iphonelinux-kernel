@@ -5,6 +5,7 @@
 #include <linux/sched.h>
 #include <linux/workqueue.h>
 #include <linux/delay.h>
+#include <linux/platform_device.h>
 
 // 2^9 = 512
 #define SECTOR_SHIFT 9
@@ -210,7 +211,7 @@ static struct block_device_operations iphone_block_fops =
 	.ioctl		= iphone_block_ioctl
 };
 
-static int __init iphone_block_init(void)
+static int iphone_block_probe(struct platform_device *pdev)
 {
 	int i;
 
@@ -279,7 +280,7 @@ out_unregister:
 	return -ENOMEM;
 }
 
-static void __exit iphone_block_exit(void)
+static int iphone_block_remove(struct platform_device *pdev)
 {
 	del_gendisk(iphone_block_device.gd);
 	put_disk(iphone_block_device.gd);
@@ -289,6 +290,56 @@ static void __exit iphone_block_exit(void)
 	kfree(iphone_block_device.bounceBuffer);
 	ftl_sync();
 	printk("iphone-block: block device unregistered\n");
+	return 0;
+}
+
+static void iphone_block_shutdown(struct platform_device *pdev)
+{
+	ftl_sync();
+}
+
+static struct platform_driver iphone_block_driver = {
+	.probe = iphone_block_probe,
+	.remove = iphone_block_remove,
+	.suspend = NULL, /* optional but recommended */
+	.resume = NULL,   /* optional but recommended */
+	.shutdown = iphone_block_shutdown,
+	.driver = {
+		.owner = THIS_MODULE,
+		.name = "iphone-block",
+	},
+};
+
+static struct platform_device iphone_block_dev = {
+	.name = "iphone-block",
+	.id = -1,
+};
+
+    /*
+     *  Setup
+     */
+
+static int __init iphone_block_init(void)
+{
+	int ret;
+
+	ret = platform_driver_register(&iphone_block_driver);
+
+	if (!ret) {
+		ret = platform_device_register(&iphone_block_dev);
+
+		if (ret != 0) {
+			platform_driver_unregister(&iphone_block_driver);
+		}
+	}
+
+	return ret;
+}
+
+static void __exit iphone_block_exit(void)
+{
+	platform_device_unregister(&iphone_block_dev);
+	platform_driver_unregister(&iphone_block_driver);
 }
 
 module_init(iphone_block_init);
