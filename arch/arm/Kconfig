@@ -224,11 +224,8 @@ config MACH_APPLE_IPHONE
 	select SERIAL_CORE
 	select SERIAL_CORE_CONSOLE
 	select FB
-	select FB_CFB_FILLRECT
-	select FB_CFB_COPYAREA
-	select FB_CFB_IMAGEBLIT
-	select FB_SYS_FOPS
 	select FRAMEBUFFER_CONSOLE
+	select FB_APPLE_IPHONE
 	select HAVE_CLK
 	select GENERIC_GPIO
         select S3C_DEV_USB_HSOTG

@@ -649,7 +649,7 @@ static int __devinit iphone_sdio_probe(struct platform_device* pdev)
 		goto err_regs_res;
 	}
 
-	ret = request_irq(SDIO_INT, sdio_irq, 0, dev_name(dev), sdio);
+	ret = request_irq(SDIO_INT, sdio_irq, IRQF_DISABLED, dev_name(dev), sdio);
 	if(ret < 0)
 	{
 		dev_err(dev, "cannot claim IRQ\n");

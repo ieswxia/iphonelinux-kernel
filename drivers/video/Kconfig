@@ -1898,6 +1898,13 @@ config FB_TMIO_ACCELL
 	depends on FB_TMIO
 	default y
 
+config FB_APPLE_IPHONE
+	tristate "iPhone framebuffer support"
+	select FB_CFB_FILLRECT
+	select FB_CFB_COPYAREA
+	select FB_CFB_IMAGEBLIT
+	select FB_SYS_FOPS
+
 config FB_S3C
 	tristate "Samsung S3C framebuffer support"
 	depends on FB && ARCH_S3C64XX
