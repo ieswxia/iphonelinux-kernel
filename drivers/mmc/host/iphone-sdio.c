@@ -90,16 +90,13 @@ static inline void sdio_check_for_irq(struct iphone_sdio* sdio)
 		mmc_signal_sdio_irq(sdio->mmc);
 }
 
-int InSDIOIRQ = 0;
 static irqreturn_t sdio_irq(int irq, void *pw)
 {
 	struct iphone_sdio* sdio = pw;
 
-	InSDIOIRQ = 1;
 	//printk("in sdio irq\n");
 	sdio_check_for_irq(sdio);
 	//printk("out of sdio irq\n");
-	InSDIOIRQ = 0;
 
 	return IRQ_HANDLED;
 }
@@ -274,8 +271,6 @@ static inline u32 setup_cmd(struct mmc_command* cmd)
 	return x;
 }
 
-int ExecutingCommand = 0;
-
 static void sdio_workqueue_handler(struct work_struct* work)
 {
 	int ret;
@@ -289,8 +284,6 @@ static void sdio_workqueue_handler(struct work_struct* work)
 		dev_warn(sdio->dev, "sdio_workqueue_handler called without any work!\n");
 		return;
 	}
-
-	ExecutingCommand = 1;
 
 	cmd = mrq->cmd;
 
@@ -471,7 +464,6 @@ static void sdio_workqueue_handler(struct work_struct* work)
 		sdio_check_for_irq(sdio);
 	}
 
-	ExecutingCommand = 0;
 	//dev_info(sdio->dev, "command successful!\n");
 	return;
 
@@ -496,7 +488,6 @@ sdio_error:
 		schedule_delayed_work(&sdio_reset_workqueue, msecs_to_jiffies(500));
 	}
 	
-	ExecutingCommand = 0;
 }
 
 static void sdio_reset_handler(struct work_struct* work)
