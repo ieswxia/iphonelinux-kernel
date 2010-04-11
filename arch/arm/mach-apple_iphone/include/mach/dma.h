@@ -6,8 +6,10 @@
 // This thing appears to be a PL080
 
 // Device
-#define DMAC0 IO_ADDRESS(0x38200000)
-#define DMAC1 IO_ADDRESS(0x39900000)
+#define DMAC0_PA 0x38200000
+#define DMAC1_PA 0x39900000
+#define DMAC0 IO_ADDRESS(DMAC0_PA)
+#define DMAC1 IO_ADDRESS(DMAC1_PA)
 
 // Registers
 #define DMACIntStatus 0

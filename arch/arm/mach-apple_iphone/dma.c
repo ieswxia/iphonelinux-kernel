@@ -6,6 +6,7 @@
 #include <linux/interrupt.h>
 #include <linux/device.h>
 #include <linux/sysdev.h>
+#include <linux/dma-mapping.h>
 #include <linux/io.h>
 #include <linux/platform_device.h>
 #include <asm/cacheflush.h>
@@ -48,8 +49,8 @@ static const u32 PeripheralLookupTable[][IPHONE_DMA_NUMCONTROLLERS] = {
 
 static volatile DMARequest requests[IPHONE_DMA_NUMCONTROLLERS][IPHONE_DMA_NUMCHANNELS];
 static DMALinkedList* DMALists[IPHONE_DMA_NUMCONTROLLERS][IPHONE_DMA_NUMCHANNELS];
-
-static DMALinkedList StaticDMALists[IPHONE_DMA_NUMCONTROLLERS][IPHONE_DMA_NUMCHANNELS];
+static dma_addr_t DMAListsPhys[IPHONE_DMA_NUMCONTROLLERS][IPHONE_DMA_NUMCHANNELS];
+static size_t DMAListsSize[IPHONE_DMA_NUMCONTROLLERS][IPHONE_DMA_NUMCHANNELS];
 
 static void dispatchRequest(volatile DMARequest *request);
 
@@ -58,6 +59,8 @@ static irqreturn_t dmaIRQHandler(int irq, void* pController);
 static volatile int Controller0FreeChannels[IPHONE_DMA_NUMCHANNELS] = {0};
 static volatile int Controller1FreeChannels[IPHONE_DMA_NUMCHANNELS] = {0};
 static spinlock_t freeChannelsLock;
+
+static struct device* dma_dev;
 
 int iphone_dma_setup(void) {
 	int ret;
@@ -73,6 +76,24 @@ int iphone_dma_setup(void) {
 	spin_lock_init(&freeChannelsLock);
 
 	return ret;
+}
+
+static DMALinkedList* get_new_linked_list(int controller, int channel, size_t size, dma_addr_t* phys)
+{
+	if(DMALists[controller][channel])
+	{
+		if(DMAListsSize[controller][channel] == size)
+		{
+			*phys = DMAListsPhys[controller][channel];
+			return DMALists[controller][channel];
+		}
+
+		dma_free_writecombine(dma_dev, size, DMALists[controller][channel], DMAListsPhys[controller][channel]);
+	}
+
+	DMALists[controller][channel] = dma_alloc_writecombine(dma_dev, size, &DMAListsPhys[controller][channel], GFP_KERNEL);
+	*phys = DMAListsPhys[controller][channel];
+	return DMALists[controller][channel];
 }
 
 static irqreturn_t dmaIRQHandler(int irq, void* pController) {
@@ -192,7 +213,31 @@ int iphone_dma_request(int Source, int SourceTransferWidth, int SourceBurstSize,
 	return 0;
 }
 
-int iphone_dma_perform(u32 Source, u32 Destination, int size, int continueList, int* controller, int* channel) {
+dma_addr_t iphone_dma_dstpos(int controller, int channel) {
+	u32 regOffset = channel * DMAChannelRegSize;
+
+	if(controller == 1) {
+		regOffset += DMAC0;
+	} else if(controller == 2) {
+		regOffset += DMAC1;
+	}
+
+	return __raw_readl(regOffset + DMAC0DestAddress);
+}
+
+dma_addr_t iphone_dma_srcpos(int controller, int channel) {
+	u32 regOffset = channel * DMAChannelRegSize;
+
+	if(controller == 1) {
+		regOffset += DMAC0;
+	} else if(controller == 2) {
+		regOffset += DMAC1;
+	}
+
+	return __raw_readl(regOffset + DMAC0SrcAddress);
+}
+
+int iphone_dma_prepare(dma_addr_t Source, dma_addr_t Destination, int size, dma_addr_t continueList, int* controller, int* channel) {
 	u32 regSrcAddress;
 	u32 regDestAddress;
 	u32 regLLI;
@@ -262,14 +307,18 @@ int iphone_dma_perform(u32 Source, u32 Destination, int size, int continueList, 
 		u32 dest = __raw_readl(regDestAddress);
 		if(transfers > 0xFFF) {
 			DMALinkedList* item;
+			dma_addr_t phys;
 
 			__raw_writel(__raw_readl(regControl0) & ~(1 << DMAC0Control0_TERMINALCOUNTINTERRUPTENABLE), regControl0);
 
 			if(DMALists[*controller - 1][*channel])
 				kfree(DMALists[*controller - 1][*channel]);
 
-			item = DMALists[*controller - 1][*channel] = kmalloc(((transfers + 0xDFF) / 0xE00) * sizeof(DMALinkedList), GFP_KERNEL);
-			__raw_writel((u32)item, regLLI);
+			item = get_new_linked_list(*controller - 1, *channel,
+					((transfers + 0xDFF) / 0xE00) * sizeof(DMALinkedList), &phys);
+			
+			__raw_writel(phys, regLLI);
+
 			do {
 				transfers -= 0xE00;
 				
@@ -300,17 +349,54 @@ int iphone_dma_perform(u32 Source, u32 Destination, int size, int continueList, 
 			__raw_writel(0, regLLI);
 		}
 	} else {
-		StaticDMALists[*controller - 1][*channel].control = __raw_readl(regControl0);
-		__raw_writel((u32)&StaticDMALists[*controller - 1][*channel], regLLI);
+		__raw_writel(continueList, regLLI);
 	}
 
 	__raw_writel((__raw_readl(regControl0) & regControl0Mask) | destinationIncrement | sourceIncrement | (transfers & DMAC0Control0_SIZEMASK), regControl0);
-	__raw_writel(DMAC0Configuration_CHANNELENABLED | DMAC0Configuration_TERMINALCOUNTINTERRUPTMASK
+	__raw_writel(DMAC0Configuration_TERMINALCOUNTINTERRUPTMASK
 			| (flowControl << DMAC0Configuration_FLOWCNTRLSHIFT)
 			| (destPeripheral << DMAC0Configuration_DESTPERIPHERALSHIFT)
 			| (sourcePeripheral << DMAC0Configuration_SRCPERIPHERALSHIFT), regConfiguration);
 
 	return 0;
+}
+
+int iphone_dma_perform(dma_addr_t Source, dma_addr_t Destination, int size, dma_addr_t continueList, int* controller, int* channel) {
+	int ret;
+
+	ret = iphone_dma_prepare(Source, Destination, size, continueList, controller, channel);
+
+	if(ret != 0)
+		return ret;
+
+	iphone_dma_resume(*controller, *channel);
+	return 0;
+}
+
+void iphone_dma_pause(int controller, int channel) {
+	u32 regOffset = channel * DMAChannelRegSize;
+
+	if(controller == 1) {
+		regOffset += DMAC0;
+	} else if(controller == 2) {
+		regOffset += DMAC1;
+	}
+
+	__raw_writel(__raw_readl(regOffset + DMAC0Configuration) & ~DMAC0Configuration_CHANNELENABLED,
+			regOffset + DMAC0Configuration);
+}
+
+void iphone_dma_resume(int controller, int channel) {
+	u32 regOffset = channel * DMAChannelRegSize;
+
+	if(controller == 1) {
+		regOffset += DMAC0;
+	} else if(controller == 2) {
+		regOffset += DMAC1;
+	}
+
+	__raw_writel(__raw_readl(regOffset + DMAC0Configuration) | DMAC0Configuration_CHANNELENABLED,
+			regOffset + DMAC0Configuration);
 }
 
 int iphone_dma_finish(int controller, int channel, int timeout) {
@@ -353,3 +439,65 @@ static void dispatchRequest(volatile DMARequest *request) {
 	}
 }
 
+static int __devinit iphone_dma_probe(struct platform_device *pdev)
+{
+	dma_dev = &pdev->dev;
+	return 0;
+}
+
+static int __devexit iphone_dma_remove(struct platform_device *pdev)
+{
+	return 0;
+}
+
+static struct resource iphone_dma_resources[] = {
+	[0] = {
+		.start  = DMAC0_PA,
+		.end    = DMAC0_PA + 0x1000 - 1,
+		.flags  = IORESOURCE_MEM,
+	},
+	[1] = {
+		.start  = DMAC1_PA,
+		.end    = DMAC1_PA + 0x1000 - 1,
+		.flags  = IORESOURCE_MEM,
+	},
+	[2] = {
+		.start  = DMAC0_INTERRUPT,
+		.end    = DMAC1_INTERRUPT,
+		.flags  = IORESOURCE_IRQ,
+	},
+};
+
+struct platform_device iphone_dma = {
+	.name           = "iphone-dma",
+	.id             = -1,
+	.num_resources  = ARRAY_SIZE(iphone_dma_resources),
+	.resource       = iphone_dma_resources,
+};
+
+static struct platform_driver iphone_dma_driver = {
+	.driver         = {
+		.name   = "iphone-dma",
+		.owner  = THIS_MODULE,
+	},
+	.probe          = iphone_dma_probe,
+	.remove         = __devexit_p(iphone_dma_remove),
+	.suspend        = NULL,
+	.resume         = NULL,
+};
+
+static int __init iphone_dma_modinit(void)
+{
+	return platform_driver_register(&iphone_dma_driver);
+}
+
+static void __exit iphone_dma_modexit(void)
+{
+	platform_driver_unregister(&iphone_dma_driver);
+}
+
+module_init(iphone_dma_modinit);
+module_exit(iphone_dma_modexit);
+
+MODULE_DESCRIPTION("iPhone DMA Controller");
+MODULE_LICENSE("GPL");

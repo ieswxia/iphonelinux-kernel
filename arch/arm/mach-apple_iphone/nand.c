@@ -130,7 +130,7 @@ static u8* aTemporarySBuf;
 
 // Linux stuff
 
-struct device *nand_dev;
+static struct device *nand_dev;
 
 #ifdef FTL_PROFILE
 static bool InWrite = false;
@@ -1139,12 +1139,12 @@ static struct platform_driver iphone_nand_driver = {
 
 static int __init iphone_nand_modinit(void)
 {
-	        return platform_driver_register(&iphone_nand_driver);
+	return platform_driver_register(&iphone_nand_driver);
 }
 
 static void __exit iphone_nand_modexit(void)
 {
-	        platform_driver_unregister(&iphone_nand_driver);
+	platform_driver_unregister(&iphone_nand_driver);
 }
 
 module_init(iphone_nand_modinit);
