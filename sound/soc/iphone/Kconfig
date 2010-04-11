@@ -1,0 +1,3 @@
+config SND_APPLE_IPHONE
+	tristate "Audio for the Apple iPhone"
+	depends on MACH_APPLE_IPHONE
