@@ -271,6 +271,13 @@ static inline u32 setup_cmd(struct mmc_command* cmd)
 	return x;
 }
 
+static void sdio_reinit(struct iphone_sdio* sdio)
+{
+	sdio->errors = -1;
+	mmc_detect_change(sdio->mmc, 0);
+	schedule_delayed_work(&sdio_reset_workqueue, msecs_to_jiffies(500));
+}
+
 static void sdio_workqueue_handler(struct work_struct* work)
 {
 	int ret;
@@ -483,9 +490,7 @@ sdio_error:
 	if(sdio->errors > 3)
 	{
 		dev_err(sdio->dev, "too many errors -- signalling Instrument of God and notifying MMC core\n");
-		sdio->errors = -1;
-		mmc_detect_change(sdio->mmc, 0);
-		schedule_delayed_work(&sdio_reset_workqueue, msecs_to_jiffies(500));
+		sdio_reinit(sdio);
 	}
 	
 }
@@ -583,6 +588,30 @@ static struct mmc_host_ops iphone_sdio_ops = {
 	.enable_sdio_irq	= iphone_enable_sdio_irq,
 };
 
+ssize_t iphone_sdio_show_reset(struct device *dev, struct device_attribute *attr,
+		char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "0\n");
+}
+
+ssize_t iphone_sdio_store_reset(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	struct iphone_sdio* sdio = sdio_driver;
+	int doReset = 0;
+	sscanf(buf, "%d", &doReset);
+	if(doReset)
+	{
+		dev_info(sdio->dev, "reinitializing SDIO card\n");
+		sdio_reinit(sdio);
+	}
+
+	return strnlen(buf, PAGE_SIZE);
+}
+
+
+DEVICE_ATTR(reset, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP, iphone_sdio_show_reset, iphone_sdio_store_reset);
+
 static int __devinit iphone_sdio_probe(struct platform_device* pdev)
 {
 	int ret;
@@ -670,6 +699,7 @@ static int __devinit iphone_sdio_probe(struct platform_device* pdev)
 	if (ret < 0)
 		goto err_remove_host;
 
+	device_create_file(dev, &dev_attr_reset);
 	dev_info(dev, "SDIO host started with regs at 0x%p, interrupt %d\n", sdio->regs, SDIO_INT);
 
 	return 0;
@@ -693,6 +723,8 @@ err_mem:
 static int __devexit iphone_sdio_remove(struct platform_device* pdev)
 {
 	struct iphone_sdio* sdio = platform_get_drvdata(pdev);
+
+	device_remove_file(&pdev->dev, &dev_attr_reset);
 
 	flush_workqueue(sdio_wq);
 
