@@ -1,5 +1,30 @@
-#ifndef IPHONE_DMA_H
-#define IPHONE_DMA_H
+#ifndef IPHONE_SPI_H
+#define IPHONE_SPI_H
+
+#define GPIO_SPI0_CS0_IPHONE 0x400
+#define GPIO_SPI0_CS0_IPOD 0x700
+
+#ifdef CONFIG_IPOD
+#define GPIO_SPI2_CS0 0x1804
+#define GPIO_SPI2_CS1 0x705
+#endif
+
+#ifdef CONFIG_IPHONE
+#define GPIO_SPI2_CS0 0x705
+#endif
+
+#ifdef CONFIG_IPOD
+#define GPIO_SPI0_CS0 GPIO_SPI0_CS0_IPOD
+#else
+#define GPIO_SPI0_CS0 GPIO_SPI0_CS0_IPHONE
+#endif
+
+#define GPIO_SPI1_CS0 0x1800
+
+#ifdef CONFIG_3G
+#define GPIO_SPI0_CS1 0x705
+#define GPIO_SPI0_CS2 0x706
+#endif
 
 typedef enum SPIOption13 {
 	SPIOption13Setting0 = 8,

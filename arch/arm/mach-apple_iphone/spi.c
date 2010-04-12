@@ -2,6 +2,7 @@
 #include <linux/interrupt.h>
 #include <mach/hardware.h>
 #include <linux/io.h>
+#include <linux/sched.h>
 
 #include <mach/iphone-clock.h>
 #include <mach/iphone-spi.h>
@@ -48,31 +49,6 @@
 #define SPI0_IRQ 0x9
 #define SPI1_IRQ 0xA
 #define SPI2_IRQ 0xB
-
-#define GPIO_SPI0_CS0_IPHONE 0x400
-#define GPIO_SPI0_CS0_IPOD 0x700
-
-#ifdef CONFIG_IPOD
-#define GPIO_SPI2_CS0 0x1804
-#define GPIO_SPI2_CS1 0x705
-#endif
-
-#ifdef CONFIG_IPHONE
-#define GPIO_SPI2_CS0 0x705
-#endif
-
-#ifdef CONFIG_IPOD
-#define GPIO_SPI0_CS0 GPIO_SPI0_CS0_IPOD
-#else
-#define GPIO_SPI0_CS0 GPIO_SPI0_CS0_IPHONE
-#endif
-
-#define GPIO_SPI1_CS0 0x1800
-
-#ifdef CONFIG_3G
-#define GPIO_SPI0_CS1 0x705
-#define GPIO_SPI0_CS2 0x706
-#endif
 
 #define NUM_SPIPORTS 3
 
@@ -232,6 +208,14 @@ void iphone_spi_set_baud(int port, int baud, SPIOption13 option13, bool isMaster
 
 }
 
+void wait_for_ready(int port)
+{
+	while(GET_BITS(readl(SPIRegs[port].status), 4, 4) != 0)
+	{
+		yield();
+	}
+}
+
 int iphone_spi_tx(int port, const u8* buffer, int len, bool block, bool unknown)
 {
 	int i;
@@ -269,6 +253,7 @@ int iphone_spi_tx(int port, const u8* buffer, int len, bool block, bool unknown)
 	if(block)
 	{
 		wait_for_completion(&spi_info[port].complete);
+		wait_for_ready(port);
 		return len;
 	} else
 	{
@@ -351,6 +336,7 @@ int iphone_spi_txrx(int port, const u8* outBuffer, int outLen, u8* inBuffer, int
 	if(block)
 	{
 		wait_for_completion(&spi_info[port].complete);
+		wait_for_ready(port);
 		return inLen;
 	} else
 	{
@@ -438,10 +424,9 @@ dorx:
 	// acknowledge interrupt handling complete
 	writel(status, SPIRegs[port].status);
 
-	if(GET_BITS(status, 4, 4) != 0)
-		complete(&spi_info[port].complete);
-	else if((!spi_info[port].rxBuffer || spi_info[port].rxDone) && (!spi_info[port].txBuffer || spi_info[port].txDone))
+	if((!spi_info[port].rxBuffer || spi_info[port].rxDone) && (!spi_info[port].txBuffer || spi_info[port].txDone))
 		complete(&spi_info[port].complete);
 
 	return IRQ_HANDLED;
 }
+
