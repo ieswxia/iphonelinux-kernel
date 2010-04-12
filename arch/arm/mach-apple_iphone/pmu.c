@@ -5,7 +5,7 @@
 #include <linux/rtc.h>
 #include <linux/bcd.h>
 #include <mach/pmu.h>
-#include "i2c.h"
+#include <mach/iphone-i2c.h>
 #include <mach/gpio.h>
 
 typedef struct PMURegisterData {

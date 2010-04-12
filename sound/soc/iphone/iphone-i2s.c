@@ -1,405 +1,232 @@
-#include <linux/dma-mapping.h>
+/*
+ * pxa2xx-i2s.c  --  ALSA Soc Audio Layer
+ *
+ * Copyright 2005 Wolfson Microelectronics PLC.
+ * Author: Liam Girdwood
+ *         lrg@slimlogic.co.uk
+ *
+ *  This program is free software; you can redistribute  it and/or modify it
+ *  under  the terms of  the GNU General  Public License as published by the
+ *  Free Software Foundation;  either version 2 of the  License, or (at your
+ *  option) any later version.
+ */
 
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/device.h>
+#include <linux/delay.h>
+#include <linux/clk.h>
+#include <linux/platform_device.h>
 #include <sound/core.h>
+#include <sound/pcm.h>
+#include <sound/initval.h>
 #include <sound/soc.h>
-#include <sound/pcm_params.h>
+
+#include <mach/iphone-clock.h>
+#include <mach/hardware.h>
 #include <mach/iphone-dma.h>
 
-struct iphone_runtime_data
-{
-	spinlock_t lock;
+#include "iphone-audio.h"
 
-	int dummy;
-	int params;
+#define I2S0_CLOCK 0x27
+#define I2S1_CLOCK 0x2A
 
-	int controller;
-	int channel;
-	int i2s;
+#define I2S0 IO_ADDRESS(0x3CA00000)
+#define I2S1 IO_ADDRESS(0x3CD00000)
 
-	dma_addr_t dma_start;
-	unsigned int dma_periods;
-	size_t dma_period_bytes;
+#define I2S_CLKCON 0
+#define I2S_TXCON 0x4
+#define I2S_TXCOM 0x8
+#define I2S_RXCON 0x30
+#define I2S_RXCOM 0x34
+#define I2S_STATUS 0x3C
 
-	DMALinkedList* continueList;
-	size_t continueListPeriodSize;
-	size_t continueListSize;
-	dma_addr_t continueListPhys;
+#ifdef CONFIG_IPOD
+#define WM_I2S I2S1
+#define DMA_WM_I2S_TX IPHONE_DMA_I2S1_TX
+#define DMA_WM_I2S_RX IPHONE_DMA_I2S1_RX
+#else
+#define WM_I2S I2S0
+#define DMA_WM_I2S_TX IPHONE_DMA_I2S0_TX
+#define DMA_WM_I2S_RX IPHONE_DMA_I2S0_RX
+#define BB_I2S I2S1
+#define DMA_BB_I2S_TX IPHONE_DMA_I2S1_TX
+#define DMA_BB_I2S_RX IPHONE_DMA_I2S1_RX
+#endif
+
+struct iphone_i2s_dma_params dma_playback = {
+	.dma_target	= DMA_WM_I2S_TX,
+	.i2sController	= WM_I2S,
 };
 
-static const struct snd_pcm_hardware iphone_pcm_hardware = {
-	.info                   = SNDRV_PCM_INFO_INTERLEAVED |
-                                  SNDRV_PCM_INFO_BLOCK_TRANSFER |
-                                  SNDRV_PCM_INFO_MMAP |
-                                  SNDRV_PCM_INFO_MMAP_VALID |
-                                  SNDRV_PCM_INFO_PAUSE |
-                                  SNDRV_PCM_INFO_RESUME,
-	.formats                = SNDRV_PCM_FMTBIT_S16_LE,
-	.channels_min           = 2,
-	.channels_max           = 2,
-	.buffer_bytes_max       = 128*1024,
-	.period_bytes_min       = PAGE_SIZE,
-	.period_bytes_max       = PAGE_SIZE*2,
-	.periods_min            = 2,
-	.periods_max            = 128,
-	.fifo_size              = 32,
+struct iphone_i2s_dma_params dma_recording = {
+	.dma_target = DMA_WM_I2S_RX,
+	.i2sController	= WM_I2S,
 };
 
-static int iphone_pcm_open(struct snd_pcm_substream *substream)
+static int iphone_i2s_startup(struct snd_pcm_substream *substream,
+			      struct snd_soc_dai *dai)
 {
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct iphone_runtime_data *rtd;
-	int ret;
-
-	runtime->hw = iphone_pcm_hardware;
-
-	/*
-	 * For mysterious reasons (and despite what the manual says)
-	 * playback samples are lost if the DMA count is not a multiple
-	 * of the DMA burst size.  Let's add a rule to enforce that.
-	ret = snd_pcm_hw_constraint_step(runtime, 0,
-		SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 32);
-	if (ret)
-		goto out;
-
-	ret = snd_pcm_hw_constraint_step(runtime, 0,
-		SNDRV_PCM_HW_PARAM_BUFFER_BYTES, 32);
-	if (ret)
-		goto out;
-	 */
-
-	ret = snd_pcm_hw_constraint_integer(runtime,
-					    SNDRV_PCM_HW_PARAM_PERIODS);
-	if (ret < 0)
-		goto out;
-
-	ret = snd_soc_set_runtime_hwparams(substream, &iphone_pcm_hardware);
-	if (ret < 0)
-		goto out;
-
-	ret = -ENOMEM;
-	rtd = kzalloc(sizeof(*rtd), GFP_KERNEL);
-	if (!rtd)
-		goto out;
-
-	rtd->controller = -1;
-	rtd->channel = -1;
-
-	spin_lock_init(&rtd->lock);
-
-	runtime->private_data = rtd;
-	return 0;
-
-	kfree(rtd);
- out:
-	return ret;
-}
-
-static int iphone_pcm_close(struct snd_pcm_substream *substream)
-{
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct iphone_runtime_data *rtd = runtime->private_data;
-
-	kfree(rtd);
+	pr_debug("ENTER iphone_i2s_startup\n");
 	return 0;
 }
 
-static void iphone_pcm_period_handler(int controller, int channel, void* token)
+static int iphone_i2s_set_dai_fmt(struct snd_soc_dai *cpu_dai,
+		unsigned int fmt)
 {
-	struct snd_pcm_substream *substream = token;
-
-	if (substream)
-		snd_pcm_period_elapsed(substream);
+	pr_debug("ENTER iphone_i2s_set_dai_fmt %u\n", fmt);
+	return 0;
 }
 
-static int iphone_pcm_prepare(struct snd_pcm_substream *substream)
+static int iphone_i2s_set_dai_sysclk(struct snd_soc_dai *cpu_dai,
+		int clk_id, unsigned int freq, int dir)
 {
-	struct iphone_runtime_data *prtd = substream->runtime->private_data;
-	dma_addr_t dma_target;
-	dma_addr_t src;
-	dma_addr_t dest;
-	dma_addr_t orig_src;
-	dma_addr_t orig_dest;
-	dma_addr_t* memory;
+	pr_debug("ENTER iphone_i2s_set_dai_sysclk %d %u %d\n", clk_id, freq, dir);
+	return 0;
+}
 
-	DMALinkedList* item;
-	dma_addr_t itemPhys;
-	DMALinkedList* last;
+static int iphone_i2s_hw_params(struct snd_pcm_substream *substream,
+				struct snd_pcm_hw_params *params,
+				struct snd_soc_dai *socdai)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai_link *dai = rtd->dai;
+	struct iphone_i2s_dma_params* dma_params;
 
-	int i;
-
-	if (!prtd || prtd->controller == -1)
-		return 0;
+	pr_debug("ENTER iphone_i2s_hw_params\n");
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 	{
-		dma_target = (prtd->i2s == 0) ? IPHONE_DMA_I2S0_TX : IPHONE_DMA_I2S1_TX;
-		iphone_dma_request(IPHONE_DMA_MEMORY, 2, 1, dma_target, 2, 1, &prtd->controller, &prtd->channel);
-		src = prtd->dma_start;
-		dest = dma_target;
-		memory = &src;
+		dma_params = &dma_playback;
+		dai->cpu_dai->dma_data = dma_params;
+		writel( (1 << 24) |  /* undocumented */
+			(1 << 20) |  /* undocumented */
+			(0 << 16) |  /* burst length */
+			(0 << 15) |  /* 0 = falling edge */
+			(0 << 13) |  /* 0 = basic I2S format */ 
+			(0 << 12) |  /* 0 = MSB first */
+			(0 << 11) |  /* 0 = left channel for low polarity */
+			(3 << 8) |   /* MCLK divider */
+			(0 << 5) |   /* 0 = 16-bit */
+			(0 << 3) |   /* bit clock per frame */
+			(1 << 0),
+			dma_params->i2sController + I2S_TXCON);    /* channel index */
+
+		writel((1 << 0), dma_params->i2sController + I2S_CLKCON);
+
+		writel(	(0 << 3) |   /* 1 = transmit mode on */
+			(1 << 2) |   /* 1 = I2S interface enable */
+			(1 << 1) |   /* 1 = DMA request enable */
+			(0 << 0),
+			dma_params->i2sController + I2S_TXCOM);    /* 0 = LRCK on */
 	} else
 	{
-		dma_target = (prtd->i2s == 0) ? IPHONE_DMA_I2S0_RX : IPHONE_DMA_I2S1_RX;
-		iphone_dma_request(dma_target, 2, 1, IPHONE_DMA_MEMORY, 2, 1, &prtd->controller, &prtd->channel);
-		src = dma_target;
-		dest = prtd->dma_start;
-		memory = &dest;
+		dma_params = &dma_recording;
+		dai->cpu_dai->dma_data = dma_params;
+		writel(
+			(0 << 12) |  /* 0 = falling edge */
+			(0 << 10) |  /* 0 = basic I2S format */ 
+			(0 << 9) |  /* 0 = MSB first */
+			(0 << 8) |  /* 0 = left channel for low polarity */
+			(3 << 5) |   /* MCLK divider */
+			(0 << 2) |   /* 0 = 16-bit */
+			(0 << 0),   /* bit clock per frame */
+			dma_params->i2sController + I2S_RXCON);    /* channel index */
+
+		writel((1 << 0), dma_params->i2sController + I2S_CLKCON);
+
+		writel(	(0 << 3) |   /* 1 = transmit mode on */
+			(1 << 2) |   /* 1 = I2S interface enable */
+			(1 << 1) |   /* 1 = DMA request enable */
+			(0 << 0),
+			dma_params->i2sController + I2S_RXCOM);    /* 0 = LRCK on */
 	}
-
-	orig_src = src;
-	orig_dest = dest;
-
-	/* Create a circular continue list of periods, with each period being a link in the circular chain */
-	item = prtd->continueList;
-	itemPhys = prtd->continueListPhys;
-
-	for(i = 0; i < prtd->dma_periods; ++i)
-	{
-		iphone_dma_create_continue_list(src, dest, prtd->dma_period_bytes, &prtd->controller, &prtd->channel,
-				&item, &itemPhys, &prtd->continueListPeriodSize, &last);
-
-		itemPhys += prtd->continueListPeriodSize;
-		item = (DMALinkedList*)(((u32)(item)) + prtd->continueListPeriodSize);
-		last->next = itemPhys;
-		*memory += prtd->dma_period_bytes;
-	}
-
-	/* Close the loop */
-	last->next = prtd->continueListPhys;
-
-	return iphone_dma_prepare(orig_src, orig_dest, 0, prtd->continueList, &prtd->controller, &prtd->channel);
-}
-
-static int iphone_pcm_hw_params(struct snd_pcm_substream *substream,
-	struct snd_pcm_hw_params *params)
-{
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct iphone_runtime_data *prtd = runtime->private_data;
-	struct snd_dma_buffer *buf = &substream->dma_buffer;
-	unsigned int period_bytes = params_period_bytes(params);
-	unsigned int periods = params_periods(params);
-	unsigned int totbytes = params_buffer_bytes(params);
-	//struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	//struct pxa2xx_pcm_dma_params *dma = rtd->dai->cpu_dai->dma_data;
-
-	if((periods * period_bytes) != totbytes)
-	{
-		printk(KERN_ERR "iphone-audio: periods must be integral\n");
-		return -EINVAL;
-	}
-
-	if(prtd->controller == -1)
-	{
-		int controller = 0;
-		int channel = 0;
-
-		/* the details don't matter yet at this point, we're just trying to get a channel */
-		int ret = iphone_dma_request(IPHONE_DMA_MEMORY, 2, 1, IPHONE_DMA_MEMORY, 2, 1, &controller, &channel);
-		if(ret != 0)
-		{
-			printk(KERN_ERR "iphone-audio: failed to get dma channel\n");
-			return -EBUSY;
-		}
-
-		iphone_dma_set_done_handler(&controller, &channel, iphone_pcm_period_handler, substream);
-
-		prtd->controller = controller;
-		prtd->channel = channel;
-	}
-
-	prtd->continueListPeriodSize = iphone_dma_continue_list_size(runtime->dma_addr, IPHONE_DMA_I2S0_TX, period_bytes, &prtd->controller, &prtd->channel);
-	prtd->continueListSize = prtd->continueListPeriodSize * periods;
-	prtd->continueList = dma_alloc_writecombine(buf->dev.dev, prtd->continueListSize, &prtd->continueListPhys, GFP_KERNEL);
-
-	spin_lock_irq(&prtd->lock);
-	prtd->i2s = 0;
-	prtd->dma_start = runtime->dma_addr;
-	prtd->dma_periods = periods;
-	prtd->dma_period_bytes = period_bytes;
-	spin_unlock_irq(&prtd->lock);
 
 	return 0;
 }
 
-static int iphone_pcm_hw_free(struct snd_pcm_substream *substream)
+static int iphone_i2s_trigger(struct snd_pcm_substream *substream, int cmd,
+			      struct snd_soc_dai *dai)
 {
-	struct iphone_runtime_data *prtd = substream->runtime->private_data;
-	struct snd_dma_buffer *buf = &substream->dma_buffer;
-
-	snd_pcm_set_runtime_buffer(substream, NULL);
-
-	if (prtd->controller != -1)
-	{
-		iphone_dma_pause(prtd->controller, prtd->channel);
-		iphone_dma_finish(prtd->controller, prtd->channel, 0);
-		prtd->controller = -1;
-		prtd->channel = -1;
-	}
-	
-	dma_free_writecombine(buf->dev.dev, prtd->continueListSize, prtd->continueList, prtd->continueListPhys);
-
-	return 0;
-}
-
-static int iphone_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
-{
-	struct iphone_runtime_data *prtd = substream->runtime->private_data;
 	int ret = 0;
 
-	spin_lock(&prtd->lock);
+	pr_debug("ENTER iphone_i2s_trigger\n");
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		iphone_dma_resume(prtd->controller, prtd->channel);
-		break;
-
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		iphone_dma_pause(prtd->controller, prtd->channel);
 		break;
-
 	default:
 		ret = -EINVAL;
 	}
 
-	spin_unlock(&prtd->lock);
-
 	return ret;
 }
 
-static snd_pcm_uframes_t iphone_pcm_pointer(struct snd_pcm_substream *substream)
+static void iphone_i2s_shutdown(struct snd_pcm_substream *substream,
+				struct snd_soc_dai *socdai)
 {
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct iphone_runtime_data *prtd = runtime->private_data;
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai_link *dai = rtd->dai;
+	struct iphone_i2s_dma_params* dma_params = dai->cpu_dai->dma_data;
 
-	dma_addr_t ptr;
-	dma_addr_t diff;
-	snd_pcm_uframes_t x;
-       
-	spin_lock(&prtd->lock);
-	ptr = (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) ?
-			 iphone_dma_srcpos(prtd->controller, prtd->channel) : iphone_dma_dstpos(prtd->controller, prtd->channel);
+	writel((1 << 0), dma_params->i2sController + I2S_CLKCON);
 
-	diff = ptr - runtime->dma_addr;
-	spin_unlock(&prtd->lock);
-
-	x = bytes_to_frames(runtime, diff);
-
-	if (x == runtime->buffer_size)
-		x = 0;
-
-	return x;
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		writel(1, dma_params->i2sController + I2S_TXCOM);
+	} else {
+		writel(1, dma_params->i2sController + I2S_RXCOM);
+	}
 }
 
-static int iphone_pcm_mmap(struct snd_pcm_substream *substream,
-	struct vm_area_struct *vma)
-{
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	return dma_mmap_writecombine(substream->pcm->card->dev, vma,
-				     runtime->dma_area,
-				     runtime->dma_addr,
-				     runtime->dma_bytes);
-}
-
-static struct snd_pcm_ops iphone_pcm_ops = {
-	.open		= iphone_pcm_open,
-	.close		= iphone_pcm_close,
-	.ioctl		= snd_pcm_lib_ioctl,
-	.hw_params	= iphone_pcm_hw_params,
-	.hw_free	= iphone_pcm_hw_free,
-	.prepare	= iphone_pcm_prepare,
-	.trigger	= iphone_pcm_trigger,
-	.pointer	= iphone_pcm_pointer,
-	.mmap		= iphone_pcm_mmap,
+static struct snd_soc_dai_ops iphone_i2s_dai_ops = {
+	.startup	= iphone_i2s_startup,
+	.shutdown	= iphone_i2s_shutdown,
+	.trigger	= iphone_i2s_trigger,
+	.hw_params	= iphone_i2s_hw_params,
+	.set_fmt	= iphone_i2s_set_dai_fmt,
+	.set_sysclk	= iphone_i2s_set_dai_sysclk,
 };
 
-static u64 iphone_pcm_dmamask = DMA_BIT_MASK(32);
-
-static int iphone_pcm_preallocate_dma_buffer(struct snd_pcm *pcm, int stream)
-{
-	struct snd_pcm_substream *substream = pcm->streams[stream].substream;
-	struct snd_dma_buffer *buf = &substream->dma_buffer;
-	size_t size = iphone_pcm_hardware.buffer_bytes_max;
-	buf->dev.type = SNDRV_DMA_TYPE_DEV;
-	buf->dev.dev = pcm->card->dev;
-	buf->private_data = NULL;
-	buf->area = dma_alloc_writecombine(pcm->card->dev, size,
-					   &buf->addr, GFP_KERNEL);
-	if (!buf->area)
-		return -ENOMEM;
-	buf->bytes = size;
-	return 0;
-}
-
-static int iphone_soc_pcm_new(struct snd_card *card, struct snd_soc_dai *dai,
-	struct snd_pcm *pcm)
-{
-	int ret = 0;
-
-	if (!card->dev->dma_mask)
-		card->dev->dma_mask = &iphone_pcm_dmamask;
-	if (!card->dev->coherent_dma_mask)
-		card->dev->coherent_dma_mask = DMA_BIT_MASK(32);
-
-	if (dai->playback.channels_min) {
-		ret = iphone_pcm_preallocate_dma_buffer(pcm,
-			SNDRV_PCM_STREAM_PLAYBACK);
-		if (ret)
-			goto out;
-	}
-
-	if (dai->capture.channels_min) {
-		ret = iphone_pcm_preallocate_dma_buffer(pcm,
-			SNDRV_PCM_STREAM_CAPTURE);
-		if (ret)
-			goto out;
-	}
- out:
-	return ret;
-}
-
-static void iphone_pcm_free_dma_buffers(struct snd_pcm *pcm)
-{
-	struct snd_pcm_substream *substream;
-	struct snd_dma_buffer *buf;
-	int stream;
-
-	for (stream = 0; stream < 2; stream++) {
-		substream = pcm->streams[stream].substream;
-		if (!substream)
-			continue;
-		buf = &substream->dma_buffer;
-		if (!buf->area)
-			continue;
-		dma_free_writecombine(pcm->card->dev, buf->bytes,
-				      buf->area, buf->addr);
-		buf->area = NULL;
-	}
-}
-
-struct snd_soc_platform snd_iphone_soc_platform = {
-	.name		= "iphone-audio",
-	.pcm_ops 	= &iphone_pcm_ops,
-	.pcm_new	= iphone_soc_pcm_new,
-	.pcm_free	= iphone_pcm_free_dma_buffers,
+struct snd_soc_dai iphone_i2s_dai = {
+	.name = "iphone-i2s",
+	.id = 0,
+	.playback = {
+		.channels_min = 2,
+		.channels_max = 2,
+		.rates = SNDRV_PCM_RATE_44100,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,},
+	.capture = {
+		.channels_min = 2,
+		.channels_max = 2,
+		.rates = SNDRV_PCM_RATE_44100,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,},
+	.ops = &iphone_i2s_dai_ops,
+	.symmetric_rates = 1,
 };
-EXPORT_SYMBOL_GPL(snd_iphone_soc_platform);
 
-static int __init snd_iphone_soc_platform_init(void)
+static int __init iphone_i2s_init(void)
 {
-	return snd_soc_register_platform(&snd_iphone_soc_platform);
+	iphone_clock_gate_switch(I2S0_CLOCK, 1);
+	iphone_clock_gate_switch(I2S1_CLOCK, 1);
+	return snd_soc_register_dai(&iphone_i2s_dai);
 }
-module_init(snd_iphone_soc_platform_init);
 
-static void __exit snd_iphone_soc_platform_exit(void)
+static void __exit iphone_i2s_exit(void)
 {
-	snd_soc_unregister_platform(&snd_iphone_soc_platform);
+	snd_soc_unregister_dai(&iphone_i2s_dai);
+	iphone_clock_gate_switch(I2S0_CLOCK, 0);
+	iphone_clock_gate_switch(I2S1_CLOCK, 0);
 }
-module_exit(snd_iphone_soc_platform_exit);
 
+module_init(iphone_i2s_init);
+module_exit(iphone_i2s_exit);
+
+/* Module information */
 MODULE_AUTHOR("Yiduo Wang");
-MODULE_DESCRIPTION("Apple iPhone PCM DMA module");
+MODULE_DESCRIPTION("Apple iPhone I2S SoC Interface");
 MODULE_LICENSE("GPL");

@@ -47,6 +47,6 @@ typedef struct I2CInfo {
 } I2CInfo;
 
 I2CError iphone_i2c_rx(int bus, int iicaddr, const uint8_t* registers, int num_regs, void* buffer, int len);
-I2CError iphone_i2c_tx(int bus, int iicaddr, void* buffer, int len);
+I2CError iphone_i2c_tx(int bus, int iicaddr, const void* buffer, int len);
 
 #endif

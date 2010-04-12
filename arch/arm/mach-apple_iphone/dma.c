@@ -282,6 +282,7 @@ void iphone_dma_create_continue_list(dma_addr_t Source, dma_addr_t Destination, 
 	if(*list_size >= (segments * sizeof(DMALinkedList)))
 	{
 		list = *continueList;
+		listPhys = *phys;
 	} else
 	{
 		*list_size = segments * sizeof(DMALinkedList);
@@ -372,7 +373,10 @@ int iphone_dma_prepare(dma_addr_t Source, dma_addr_t Destination, int size, DMAL
 	regConfiguration = regOffset + DMAC0Configuration;
 
 	if(DMALists[*controller - 1][*channel])
+	{
 		dma_free_writecombine(dma_dev, DMAListsSize[*controller -  1][*channel], DMALists[*controller - 1][*channel], DMAListsPhys[*controller - 1][*channel]);
+		DMALists[*controller - 1][*channel] = NULL;
+	}
 
 	if(!continueList)
 	{
@@ -558,6 +562,7 @@ static struct platform_driver iphone_dma_driver = {
 
 static int __init iphone_dma_modinit(void)
 {
+	memset(DMALists, 0, sizeof(DMALists));
 	return platform_driver_register(&iphone_dma_driver);
 }
 

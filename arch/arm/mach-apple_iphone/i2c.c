@@ -5,7 +5,7 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include "i2c.h"
+#include <mach/iphone-i2c.h>
 #include <mach/gpio.h>
 #include <mach/iphone-clock.h>
 #include <mach/hardware.h>
@@ -52,7 +52,7 @@ I2CError iphone_i2c_rx(int bus, int iicaddr, const uint8_t* registers, int num_r
 	return iphone_i2c_readwrite(&I2C[bus]);
 }
 
-I2CError iphone_i2c_tx(int bus, int iicaddr, void* buffer, int len) {
+I2CError iphone_i2c_tx(int bus, int iicaddr, const void* buffer, int len) {
 	I2C[bus].address = iicaddr;
 	I2C[bus].is_write = 1;
 	I2C[bus].registers = NULL;
