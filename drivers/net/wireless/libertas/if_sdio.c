@@ -132,6 +132,8 @@ struct if_sdio_card {
 	struct work_struct	packet_worker;
 
 	u8			rx_unit;
+
+	const struct firmware	*helper_fw;
 };
 
 /********************************************************************/
@@ -463,11 +465,10 @@ release:
 /* Firmware                                                         */
 /********************************************************************/
 
-static int if_sdio_prog_helper(struct if_sdio_card *card)
+static int if_sdio_prog_helper(struct if_sdio_card *card, const struct firmware *fw)
 {
 	int ret;
 	u8 status;
-	const struct firmware *fw;
 	unsigned long timeout;
 	u8 *chunk_buffer;
 	u32 chunk_size;
@@ -476,16 +477,10 @@ static int if_sdio_prog_helper(struct if_sdio_card *card)
 
 	lbs_deb_enter(LBS_DEB_SDIO);
 
-	ret = request_firmware(&fw, card->helper, &card->func->dev);
-	if (ret) {
-		lbs_pr_err("can't load helper firmware\n");
-		goto out;
-	}
-
 	chunk_buffer = kzalloc(64, GFP_KERNEL);
 	if (!chunk_buffer) {
 		ret = -ENOMEM;
-		goto release_fw;
+		goto out;
 	}
 
 	sdio_claim_host(card->func);
@@ -566,8 +561,6 @@ static int if_sdio_prog_helper(struct if_sdio_card *card)
 release:
 	sdio_release_host(card->func);
 	kfree(chunk_buffer);
-release_fw:
-	release_firmware(fw);
 
 out:
 	if (ret)
@@ -578,11 +571,10 @@ out:
 	return ret;
 }
 
-static int if_sdio_prog_real(struct if_sdio_card *card)
+static int if_sdio_prog_real(struct if_sdio_card *card, const struct firmware *fw)
 {
 	int ret;
 	u8 status;
-	const struct firmware *fw;
 	unsigned long timeout;
 	u8 *chunk_buffer;
 	u32 chunk_size;
@@ -591,16 +583,10 @@ static int if_sdio_prog_real(struct if_sdio_card *card)
 
 	lbs_deb_enter(LBS_DEB_SDIO);
 
-	ret = request_firmware(&fw, card->firmware, &card->func->dev);
-	if (ret) {
-		lbs_pr_err("can't load firmware\n");
-		goto out;
-	}
-
 	chunk_buffer = kzalloc(512, GFP_KERNEL);
 	if (!chunk_buffer) {
 		ret = -ENOMEM;
-		goto release_fw;
+		goto out;
 	}
 
 	sdio_claim_host(card->func);
@@ -701,8 +687,6 @@ static int if_sdio_prog_real(struct if_sdio_card *card)
 release:
 	sdio_release_host(card->func);
 	kfree(chunk_buffer);
-release_fw:
-	release_firmware(fw);
 
 out:
 	if (ret)
@@ -713,7 +697,7 @@ out:
 	return ret;
 }
 
-static int if_sdio_prog_firmware(struct if_sdio_card *card)
+static int if_sdio_prog_firmware(struct if_sdio_card *card, const struct firmware* helper, const struct firmware* real)
 {
 	int ret;
 	u16 scratch;
@@ -734,11 +718,11 @@ static int if_sdio_prog_firmware(struct if_sdio_card *card)
 		goto success;
 	}
 
-	ret = if_sdio_prog_helper(card);
+	ret = if_sdio_prog_helper(card, helper);
 	if (ret)
 		goto out;
 
-	ret = if_sdio_prog_real(card);
+	ret = if_sdio_prog_real(card, real);
 	if (ret)
 		goto out;
 
@@ -752,6 +736,29 @@ out:
 	lbs_deb_leave_args(LBS_DEB_SDIO, "ret %d", ret);
 
 	return ret;
+}
+
+static int if_sdio_probe_complete(struct if_sdio_card *card);
+
+static void if_sdio_got_firmware(const struct firmware* fw, void *context)
+{
+	struct if_sdio_card *card = context;
+
+	if(if_sdio_prog_firmware(card, card->helper_fw, fw) != 0)
+		goto release_fw;
+
+	if_sdio_probe_complete(card);
+
+release_fw:
+	release_firmware(card->helper_fw);
+	release_firmware(fw);
+}
+
+static void if_sdio_got_helper(const struct firmware* fw, void *context)
+{
+	struct if_sdio_card *card = context;
+	card->helper_fw = fw;
+	request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG, card->firmware, &card->func->dev, GFP_KERNEL, card, if_sdio_got_firmware);
 }
 
 /*******************************************************************/
@@ -934,11 +941,98 @@ out:
 	lbs_deb_leave_args(LBS_DEB_SDIO, "ret %d", ret);
 }
 
+static int if_sdio_probe_complete(struct if_sdio_card *card)
+{
+	int ret;
+	struct lbs_private *priv;
+	struct if_sdio_packet *packet;
+	struct sdio_func *func = card->func;
+
+	lbs_deb_enter(LBS_DEB_SDIO);
+
+	priv = lbs_add_card(card, &func->dev);
+	if (!priv) {
+		ret = -ENOMEM;
+		goto reclaim;
+	}
+
+	card->priv = priv;
+
+	priv->card = card;
+	priv->hw_host_to_card = if_sdio_host_to_card;
+	priv->enter_deep_sleep = if_sdio_enter_deep_sleep;
+	priv->exit_deep_sleep = if_sdio_exit_deep_sleep;
+	priv->reset_deep_sleep_wakeup = if_sdio_reset_deep_sleep_wakeup;
+
+	priv->fw_ready = 1;
+
+	sdio_claim_host(func);
+
+	/*
+	 * Get rx_unit if the chip is SD8688 or newer.
+	 * SD8385 & SD8686 do not have rx_unit.
+	 */
+	if ((card->model != IF_SDIO_MODEL_8385)
+			&& (card->model != IF_SDIO_MODEL_8686))
+		card->rx_unit = if_sdio_read_rx_unit(card);
+	else
+		card->rx_unit = 0;
+
+	/*
+	 * Enable interrupts now that everything is set up
+	 */
+	sdio_writeb(func, 0x0f, IF_SDIO_H_INT_MASK, &ret);
+	sdio_release_host(func);
+	if (ret)
+		goto reclaim;
+
+	/*
+	 * FUNC_INIT is required for SD8688 WLAN/BT multiple functions
+	 */
+	if (card->model == IF_SDIO_MODEL_8688) {
+		struct cmd_header cmd;
+
+		memset(&cmd, 0, sizeof(cmd));
+
+		lbs_deb_sdio("send function INIT command\n");
+		if (__lbs_cmd(priv, CMD_FUNC_INIT, &cmd, sizeof(cmd),
+				lbs_cmd_copyback, (unsigned long) &cmd))
+			lbs_pr_alert("CMD_FUNC_INIT cmd failed\n");
+	}
+
+	ret = lbs_start_card(priv);
+	if (ret)
+		goto err_activate_card;
+
+out:
+	lbs_deb_leave_args(LBS_DEB_SDIO, "ret %d", ret);
+
+	return ret;
+
+err_activate_card:
+	flush_workqueue(card->workqueue);
+	lbs_remove_card(priv);
+reclaim:
+	sdio_claim_host(func);
+	sdio_release_irq(func);
+	sdio_disable_func(func);
+	sdio_release_host(func);
+	destroy_workqueue(card->workqueue);
+	while (card->packets) {
+		packet = card->packets;
+		card->packets = card->packets->next;
+		kfree(packet);
+	}
+
+	kfree(card);
+
+	goto out;
+}
+
 static int if_sdio_probe(struct sdio_func *func,
 		const struct sdio_device_id *id)
 {
 	struct if_sdio_card *card;
-	struct lbs_private *priv;
 	int ret, i;
 	unsigned int model;
 	struct if_sdio_packet *packet;
@@ -1043,72 +1137,15 @@ static int if_sdio_probe(struct sdio_func *func,
 			func->class, func->vendor, func->device,
 			model, (unsigned)card->ioport);
 
-	ret = if_sdio_prog_firmware(card);
+	ret = request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG, card->helper, &card->func->dev, GFP_KERNEL, card, if_sdio_got_helper);
 	if (ret)
 		goto reclaim;
-
-	priv = lbs_add_card(card, &func->dev);
-	if (!priv) {
-		ret = -ENOMEM;
-		goto reclaim;
-	}
-
-	card->priv = priv;
-
-	priv->card = card;
-	priv->hw_host_to_card = if_sdio_host_to_card;
-	priv->enter_deep_sleep = if_sdio_enter_deep_sleep;
-	priv->exit_deep_sleep = if_sdio_exit_deep_sleep;
-	priv->reset_deep_sleep_wakeup = if_sdio_reset_deep_sleep_wakeup;
-
-	priv->fw_ready = 1;
-
-	sdio_claim_host(func);
-
-	/*
-	 * Get rx_unit if the chip is SD8688 or newer.
-	 * SD8385 & SD8686 do not have rx_unit.
-	 */
-	if ((card->model != IF_SDIO_MODEL_8385)
-			&& (card->model != IF_SDIO_MODEL_8686))
-		card->rx_unit = if_sdio_read_rx_unit(card);
-	else
-		card->rx_unit = 0;
-
-	/*
-	 * Enable interrupts now that everything is set up
-	 */
-	sdio_writeb(func, 0x0f, IF_SDIO_H_INT_MASK, &ret);
-	sdio_release_host(func);
-	if (ret)
-		goto reclaim;
-
-	/*
-	 * FUNC_INIT is required for SD8688 WLAN/BT multiple functions
-	 */
-	if (card->model == IF_SDIO_MODEL_8688) {
-		struct cmd_header cmd;
-
-		memset(&cmd, 0, sizeof(cmd));
-
-		lbs_deb_sdio("send function INIT command\n");
-		if (__lbs_cmd(priv, CMD_FUNC_INIT, &cmd, sizeof(cmd),
-				lbs_cmd_copyback, (unsigned long) &cmd))
-			lbs_pr_alert("CMD_FUNC_INIT cmd failed\n");
-	}
-
-	ret = lbs_start_card(priv);
-	if (ret)
-		goto err_activate_card;
 
 out:
 	lbs_deb_leave_args(LBS_DEB_SDIO, "ret %d", ret);
 
 	return ret;
 
-err_activate_card:
-	flush_workqueue(card->workqueue);
-	lbs_remove_card(priv);
 reclaim:
 	sdio_claim_host(func);
 release_int:
