@@ -1,6 +1,5 @@
 #include <linux/init.h>
 #include <linux/module.h>
-#include <asm/irq.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
@@ -9,7 +8,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
 #include <linux/platform_device.h>
-#include <asm/cacheflush.h>
 #include <linux/delay.h>
 #include <linux/sched.h>
 
