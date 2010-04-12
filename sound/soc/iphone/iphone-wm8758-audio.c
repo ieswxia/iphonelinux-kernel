@@ -470,6 +470,12 @@ static int iphone_wm8758_mute(struct snd_soc_dai *dai, int mute)
 	struct snd_soc_codec *codec = dai->codec;
 
 	dev_info(codec->dev, "ENTER iphone_wm8758_mute\n");
+
+	if (mute)
+		snd_soc_update_bits(codec, DACCTRL, 0x40, 0x40);
+	else
+		snd_soc_update_bits(codec, DACCTRL, 0x40, 0);
+
 	return 0;
 }
 
