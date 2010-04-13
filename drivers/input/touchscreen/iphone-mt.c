@@ -358,21 +358,6 @@ int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* 
 
 	FirmwareLoaded = true;
 
-	//mt_thread = kthread_create(multitouch_thread, NULL, "multitouch");
-/*	while(TRUE)
-	{
-		EnterCriticalSection();
-		if(!GotATN)
-		{
-			LeaveCriticalSection();
-			continue;
-		}
-		--GotATN;
-		LeaveCriticalSection();
-
-		while(readFrame() == 1);
-	}*/
-
 	return 0;
 }
 

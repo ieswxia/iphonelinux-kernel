@@ -278,36 +278,23 @@ int iphone_uart_write(int ureg, const char *buffer, u32 length) {
 
 	written = 0;
 	while(written < length) {
-		int i;
-		for(i = 0; i < 2; i++) {
-			if(settings->fifo) {
-				// spin until the tx fifo buffer is no longer full
-				while((__raw_readl(uart->UFSTAT) & UART_UFSTAT_TXFIFO_FULL) != 0);
-			} else {
-				// spin while not Transmitter Empty
-				while((__raw_readl(uart->UTRSTAT) & UART_UTRSTAT_TRANSMITTEREMPTY) == 0);
-			}
-
-			if(settings->flow_control) {		// only need to do this when there is flow control
-				// spin while not Transmitter Empty
-				while((__raw_readl(uart->UTRSTAT) & UART_UTRSTAT_TRANSMITTEREMPTY) == 0);
-
-				// spin while not Clear To Send
-				while((__raw_readl(uart->UMSTAT) & UART_UMSTAT_CTS) == 0);
-			}
-
-			if(i == 1) {
-				// flush buffer
-				__raw_writel(0, uart->UTXH);
-				break;
-			} else {
-				if(*buffer == '\n') {
-					__raw_writel('\r', uart->UTXH); 
-					while((__raw_readl(uart->UTRSTAT) & UART_UTRSTAT_TRANSMITTEREMPTY) == 0);
-				}
-				__raw_writel(*buffer, uart->UTXH); 
-			}
+		if(settings->fifo) {
+			// spin until the tx fifo buffer is no longer full
+			while((__raw_readl(uart->UFSTAT) & UART_UFSTAT_TXFIFO_FULL) != 0);
+		} else {
+			// spin while not Transmitter Empty
+			while((__raw_readl(uart->UTRSTAT) & UART_UTRSTAT_TRANSMITTEREMPTY) == 0);
 		}
+
+		if(settings->flow_control) {		// only need to do this when there is flow control
+			// spin while not Transmitter Empty
+			while((__raw_readl(uart->UTRSTAT) & UART_UTRSTAT_TRANSMITTEREMPTY) == 0);
+
+			// spin while not Clear To Send
+			while((__raw_readl(uart->UMSTAT) & UART_UMSTAT_CTS) == 0);
+		}
+
+		__raw_writel(*buffer, uart->UTXH);
 
 		buffer++;
 		written++;

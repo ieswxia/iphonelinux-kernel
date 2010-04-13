@@ -219,7 +219,7 @@ int timer_init(int timer_id, u32 interval, u32 unknown2, u32 z, int option24, in
 
 	__raw_writel(config, HWTimers[timer_id].config);
 	__raw_writel(interval, HWTimers[timer_id].count_buffer);
-	__raw_writel(Timers[timer_id].unknown1, HWTimers[timer_id].unknown1);
+	__raw_writel(__raw_readl(HWTimers[timer_id].unknown1), HWTimers[timer_id].unknown1);
 	__raw_writel(unknown2, HWTimers[timer_id].unknown2);
 
 	// apply the settings
