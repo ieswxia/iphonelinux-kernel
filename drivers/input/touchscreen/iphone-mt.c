@@ -2,6 +2,7 @@
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/firmware.h>
+#include <linux/input.h>
 #include <mach/iphone-spi.h>
 #include <mach/gpio.h>
 
@@ -56,21 +57,24 @@ typedef struct FingerData
 	u8 unk_3;
 	s16 x;
 	s16 y;
-	s16 velX;
-	s16 velY;
-	u16 radius2;
-	u16 radius3;
-	u16 angle;
-	u16 radius1;
-	u16 contactDensity;
+	s16 rel_x;
+	s16 rel_y;
+	u16 size_major;
+	u16 size_minor;
+	u16 orientation;
+	u16 force_major;
+	u16 force_minor;
 	u16 unk_16;
 	u16 unk_18;
 	u16 unk_1A;
 } FingerData;
 
-static void multitouch_atn(u32 token);
+#define MAX_FINGER_ORIENTATION  16384
+
+static irqreturn_t multitouch_atn(int irq, void* pToken);
 
 volatile int GotATN;
+spinlock_t GotATNLock;
 
 static u8* OutputPacket;
 static u8* InputPacket;
@@ -127,18 +131,23 @@ static int readFrame(void);
 static bool readResultData(int len);
 
 static void newPacket(const u8* data, int len);
+static void multitouch_atn_handler(struct work_struct* work);
 
 bool MultitouchOn = false;
+bool FirmwareLoaded = false;
 
-struct device* multitouch_dev = NULL;
-const struct firmware* aspeed_fw;
-const struct firmware* main_fw;
+static struct device* multitouch_dev = NULL;
+struct input_dev* input_dev;
+const static struct firmware* aspeed_fw;
+const static struct firmware* main_fw;
+
+DECLARE_WORK(multitouch_workqueue, &multitouch_atn_handler);
 
 void multitouch_on(void)
 {
 	if(!MultitouchOn)
 	{
-		printk("multitouch: powering on\r\n");
+		printk("multitouch: powering on\n");
 		iphone_gpio_pin_output(MT_GPIO_POWER, 0);
 		msleep(200);
 		iphone_gpio_pin_output(MT_GPIO_POWER, 1);
@@ -151,8 +160,9 @@ void multitouch_on(void)
 int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* mainFirmware, int mainFirmwareLen)
 {
 	int i;
+	int ret;
 
-	printk("multitouch: A-Speed firmware at 0x%08x - 0x%08x, Main firmware at 0x%08x - 0x%08x\r\n",
+	printk("multitouch: A-Speed firmware at 0x%08x - 0x%08x, Main firmware at 0x%08x - 0x%08x\n",
 			(u32) ASpeedFirmware, (u32)(ASpeedFirmware + ASpeedFirmwareLen),
 			(u32) mainFirmware, (u32)(mainFirmware + mainFirmwareLen));
 
@@ -164,12 +174,12 @@ int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* 
 	memset(GetInfoPacket, 0x82, 0x400);
 	memset(GetResultPacket, 0x68, 0x400);
 
-	//gpio_register_interrupt(MT_ATN_INTERRUPT, 0, 0, 0, multitouch_atn, 0);
-	//gpio_interrupt_enable(MT_ATN_INTERRUPT);
+	iphone_gpio_register_interrupt(MT_ATN_INTERRUPT, 0, 0, 0, multitouch_atn, 0);
+	iphone_gpio_interrupt_enable(MT_ATN_INTERRUPT);
 
 	multitouch_on();
 
-	printk("multitouch: Sending A-Speed firmware...\r\n");
+	printk("multitouch: Sending A-Speed firmware...\n");
 	if(!loadASpeedFirmware(ASpeedFirmware, ASpeedFirmwareLen))
 	{
 		kfree(InputPacket);
@@ -181,7 +191,7 @@ int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* 
 
 	msleep(1);
 
-	printk("multitouch: Sending main firmware...\r\n");
+	printk("multitouch: Sending main firmware...\n");
 	if(!loadMainFirmware(mainFirmware, mainFirmwareLen))
 	{
 		kfree(InputPacket);
@@ -193,7 +203,7 @@ int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* 
 
 	msleep(1);
 
-	printk("multitouch: Determining interface version...\r\n");
+	printk("multitouch: Determining interface version...\n");
 	if(!determineInterfaceVersion())
 	{
 		kfree(InputPacket);
@@ -209,7 +219,7 @@ int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* 
 
 		if(!getReport(MT_INFO_FAMILYID, reportBuffer, &reportLen))
 		{
-			printk("multitouch: failed getting family id!\r\n");
+			printk("multitouch: failed getting family id!\n");
 			kfree(InputPacket);
 			kfree(OutputPacket);
 			kfree(GetInfoPacket);
@@ -221,7 +231,7 @@ int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* 
 
 		if(!getReport(MT_INFO_SENSORINFO, reportBuffer, &reportLen))
 		{
-			printk("multitouch: failed getting sensor info!\r\n");
+			printk("multitouch: failed getting sensor info!\n");
 			kfree(InputPacket);
 			kfree(OutputPacket);
 			kfree(GetInfoPacket);
@@ -236,7 +246,7 @@ int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* 
 
 		if(!getReport(MT_INFO_SENSORREGIONDESC, reportBuffer, &reportLen))
 		{
-			printk("multitouch: failed getting sensor region descriptor!\r\n");
+			printk("multitouch: failed getting sensor region descriptor!\n");
 			kfree(InputPacket);
 			kfree(OutputPacket);
 			kfree(GetInfoPacket);
@@ -250,7 +260,7 @@ int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* 
 
 		if(!getReport(MT_INFO_SENSORREGIONPARAM, reportBuffer, &reportLen))
 		{
-			printk("multitouch: failed getting sensor region param!\r\n");
+			printk("multitouch: failed getting sensor region param!\n");
 			kfree(InputPacket);
 			kfree(OutputPacket);
 			kfree(GetInfoPacket);
@@ -265,7 +275,7 @@ int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* 
 
 		if(!getReport(MT_INFO_SENSORDIM, reportBuffer, &reportLen))
 		{
-			printk("multitouch: failed getting sensor surface dimensions!\r\n");
+			printk("multitouch: failed getting sensor surface dimensions!\n");
 			kfree(InputPacket);
 			kfree(OutputPacket);
 			kfree(GetInfoPacket);
@@ -279,27 +289,76 @@ int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* 
 		SensorHeight = *((u32*)&reportBuffer[4]);
 	}
 
-	printk("Family ID                : 0x%x\r\n", FamilyID);
-	printk("Sensor rows              : 0x%x\r\n", SensorRows);
-	printk("Sensor columns           : 0x%x\r\n", SensorColumns);
-	printk("Sensor width             : 0x%x\r\n", SensorWidth);
-	printk("Sensor height            : 0x%x\r\n", SensorHeight);
-	printk("BCD Version              : 0x%x\r\n", BCDVersion);
-	printk("Endianness               : 0x%x\r\n", Endianness);
+	printk("Family ID                : 0x%x\n", FamilyID);
+	printk("Sensor rows              : 0x%x\n", SensorRows);
+	printk("Sensor columns           : 0x%x\n", SensorColumns);
+	printk("Sensor width             : 0x%x\n", SensorWidth);
+	printk("Sensor height            : 0x%x\n", SensorHeight);
+	printk("BCD Version              : 0x%x\n", BCDVersion);
+	printk("Endianness               : 0x%x\n", Endianness);
 	printk("Sensor region descriptor :");
 	for(i = 0; i < SensorRegionDescriptorLen; ++i)
 		printk(" %02x", SensorRegionDescriptor[i]);
-	printk("\r\n");
+	printk("\n");
 
 	printk("Sensor region param      :");
 	for(i = 0; i < SensorRegionParamLen; ++i)
 		printk(" %02x", SensorRegionParam[i]);
-	printk("\r\n");
+	printk("\n");
+
+	input_dev = input_allocate_device();
+	if(!input_dev)
+	{
+		kfree(InputPacket);
+		kfree(OutputPacket);
+		kfree(GetInfoPacket);
+		kfree(GetResultPacket);
+		kfree(SensorRegionDescriptor);
+		kfree(SensorRegionParam);
+		return -1;
+	}
+
+
+	input_dev->name = "iPhone Zephyr Multitouch Screen";
+	input_dev->phys = "multitouch0";
+	input_dev->id.vendor = 0x05AC;
+	input_dev->id.product = 0;
+	input_dev->id.version = 0x0000;
+	input_dev->dev.parent = multitouch_dev;
+	input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
+	input_dev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
+	input_set_abs_params(input_dev, ABS_X, 0, SensorWidth, 0, 0);
+	input_set_abs_params(input_dev, ABS_Y, 0, SensorHeight, 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, 0, max(SensorHeight, SensorWidth), 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_TOUCH_MINOR, 0, max(SensorHeight, SensorWidth), 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_WIDTH_MAJOR, 0, max(SensorHeight, SensorWidth), 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_WIDTH_MINOR, 0, max(SensorHeight, SensorWidth), 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_ORIENTATION, -MAX_FINGER_ORIENTATION, MAX_FINGER_ORIENTATION, 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_POSITION_X, 0, SensorWidth, 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_POSITION_Y, 0, SensorHeight, 0, 0);
+
+	/* not sure what the actual max is */
+	input_set_abs_params(input_dev, ABS_MT_TRACKING_ID, 0, 32, 0, 0);
+
+	ret = input_register_device(input_dev);
+	if(ret != 0)
+	{
+		kfree(InputPacket);
+		kfree(OutputPacket);
+		kfree(GetInfoPacket);
+		kfree(GetResultPacket);
+		kfree(SensorRegionDescriptor);
+		kfree(SensorRegionParam);
+		return -1;
+	}
 
 	CurNOP = 0x64;
-
 	GotATN = 0;
+	spin_lock_init(&GotATNLock);
 
+	FirmwareLoaded = true;
+
+	//mt_thread = kthread_create(multitouch_thread, NULL, "multitouch");
 /*	while(TRUE)
 	{
 		EnterCriticalSection();
@@ -317,36 +376,74 @@ int multitouch_setup(const u8* ASpeedFirmware, int ASpeedFirmwareLen, const u8* 
 	return 0;
 }
 
+static void multitouch_atn_handler(struct work_struct* work)
+{
+	unsigned long flags;
+
+	if(!FirmwareLoaded)
+		return;
+
+	spin_lock_irqsave(&GotATNLock, flags);
+	while(GotATN)
+	{
+		--GotATN;
+		spin_unlock_irqrestore(&GotATNLock, flags);
+		while(readFrame() == 1);
+		spin_lock_irqsave(&GotATNLock, flags);
+	}
+	spin_unlock_irqrestore(&GotATNLock, flags);
+}
+
 static void newPacket(const u8* data, int len)
 {
 	int i;
 	FingerData* finger;
 	MTFrameHeader* header = (MTFrameHeader*) data;
 	if(header->type != 0x44 && header->type != 0x43)
-		printk("multitouch: unknown frame type 0x%x\r\n", header->type);
+		printk("multitouch: unknown frame type 0x%x\n", header->type);
 
 	finger = (FingerData*)(data + (header->headerLen));
 
 	if(header->headerLen < 12)
-		printk("multitouch: no finger data in frame\r\n");
+		printk("multitouch: no finger data in frame\n");
 
-	printk("------START------\r\n");
+//	printk("------START------\n");
 
 	for(i = 0; i < header->numFingers; ++i)
 	{
-		printk("multitouch: finger %d -- id=%d, event=%d, X(%d/%d, vel: %d), Y(%d/%d, vel: %d), radii(%d, %d, %d, angle: %d), contactDensity: %d\r\n",
+		input_report_abs(input_dev, ABS_MT_TOUCH_MAJOR, finger->force_major);
+		input_report_abs(input_dev, ABS_MT_TOUCH_MINOR, finger->force_minor);
+		input_report_abs(input_dev, ABS_MT_WIDTH_MAJOR, finger->size_major);
+		input_report_abs(input_dev, ABS_MT_WIDTH_MINOR, finger->size_minor);
+		input_report_abs(input_dev, ABS_MT_ORIENTATION, MAX_FINGER_ORIENTATION - finger->orientation);
+		input_report_abs(input_dev, ABS_MT_POSITION_X, finger->x);
+		input_report_abs(input_dev, ABS_MT_POSITION_Y, SensorHeight - finger->y);
+		input_report_abs(input_dev, ABS_MT_TRACKING_ID, finger->id);
+		input_mt_sync(input_dev);
+/*		printk("multitouch: finger %d -- id=%d, event=%d, X(%d/%d, vel: %d), Y(%d/%d, vel: %d), radii(%d, %d, %d, orientation: %d), force_minor: %d\n",
 				i, finger->id, finger->event,
-				finger->x, SensorWidth, finger->velX,
-				finger->y, SensorHeight, finger->velY,
-				finger->radius1, finger->radius2, finger->radius3, finger->angle,
-				finger->contactDensity);
+				finger->x, SensorWidth, finger->rel_x,
+				finger->y, SensorHeight, finger->rel_y,
+				finger->force_major, finger->size_major, finger->size_minor, finger->orientation,
+				finger->force_minor);
 
 		//framebuffer_draw_rect(0xFF0000, (finger->x * framebuffer_width()) / SensorWidth - 2 , ((SensorHeight - finger->y) * framebuffer_height()) / SensorHeight - 2, 4, 4);
-		//hexdump((u32) finger, sizeof(FingerData));
+		//hexdump((u32) finger, sizeof(FingerData));*/
 		finger = (FingerData*) (((u8*) finger) + header->fingerDataLen);
 	}
 
-	printk("-------END-------\r\n");
+	if(header->numFingers > 0)
+	{
+		finger = (FingerData*)(data + (header->headerLen));
+
+		input_report_abs(input_dev, ABS_X, finger->x);
+		input_report_abs(input_dev, ABS_Y, SensorHeight - finger->y);
+		input_report_key(input_dev, BTN_TOUCH, finger->size_minor > 0);
+	}
+
+	input_sync(input_dev);
+
+//	printk("-------END-------\n");
 }
 
 static int readFrame()
@@ -358,7 +455,7 @@ static int readFrame()
 		int len = 0;
 		if(!readFrameLength(&len))
 		{
-			printk("multitouch: error getting frame length\r\n");
+			printk("multitouch: error getting frame length\n");
 			msleep(1);
 			continue;
 		}
@@ -367,7 +464,7 @@ static int readFrame()
 		{
 			if(!readResultData(len + 1))
 			{
-				printk("multitouch: error getting frame data\r\n");
+				printk("multitouch: error getting frame data\n");
 				msleep(1);
 				continue;
 			}
@@ -458,7 +555,7 @@ static bool readFrameLength(int* len)
 
 		if(tLen > MaxPacketSize)
 		{
-			printk("multitouch: device unexpectedly requested to transfer a %d byte packet. Max size = %d\r\n", tLen, MaxPacketSize);
+			printk("multitouch: device unexpectedly requested to transfer a %d byte packet. Max size = %d\n", tLen, MaxPacketSize);
 			msleep(1);
 			continue;
 		}
@@ -578,7 +675,7 @@ static bool determineInterfaceVersion()
 			InterfaceVersion = rx[1];
 			MaxPacketSize = (rx[2] << 8) | rx[3];
 
-			printk("multitouch: interface version %d, max packet size: %d\r\n", InterfaceVersion, MaxPacketSize);
+			printk("multitouch: interface version %d, max packet size: %d\n", InterfaceVersion, MaxPacketSize);
 			return true;
 		}
 
@@ -587,7 +684,7 @@ static bool determineInterfaceVersion()
 		msleep(3);
 	}
 
-	printk("multitouch: failed getting interface version!\r\n");
+	printk("multitouch: failed getting interface version!\n");
 
 	return false;
 }
@@ -610,7 +707,7 @@ static bool loadASpeedFirmware(const u8* firmware, int len)
 
 		for(try = 0; try < 5; ++try)
 		{
-			printk("multitouch: uploading data packet\r\n");
+			printk("multitouch: uploading data packet\n");
 			mt_spi_tx(NORMAL_SPEED, OutputPacket, 0x400);
 
 			udelay(300);
@@ -644,7 +741,7 @@ static bool loadMainFirmware(const u8* firmware, int len)
 	{
 		sendBlankDataPacket();
 
-		printk("multitouch: uploading main firmware\r\n");
+		printk("multitouch: uploading main firmware\n");
 		mt_spi_tx(FAST_SPEED, firmware, len);
 
 		if(verifyUpload(checksum))
@@ -673,23 +770,23 @@ static bool verifyUpload(int checksum)
 
 	if(rx[0] != 0xD0 || rx[1] != 0x0)
 	{
-		printk("multitouch: data verification failed type bytes, got %02x %02x %02x %02x -- %x\r\n", rx[0], rx[1], rx[2], rx[3], checksum);
+		printk("multitouch: data verification failed type bytes, got %02x %02x %02x %02x -- %x\n", rx[0], rx[1], rx[2], rx[3], checksum);
 		return false;
 	}
 
 	if(rx[2] != ((checksum >> 8) & 0xFF))
 	{
-		printk("multitouch: data verification failed upper checksum, %02x != %02x\r\n", rx[2], (checksum >> 8) & 0xFF);
+		printk("multitouch: data verification failed upper checksum, %02x != %02x\n", rx[2], (checksum >> 8) & 0xFF);
 		return false;
 	}
 
 	if(rx[3] != (checksum & 0xFF))
 	{
-		printk("multitouch: data verification failed lower checksum, %02x != %02x\r\n", rx[3], checksum & 0xFF);
+		printk("multitouch: data verification failed lower checksum, %02x != %02x\n", rx[3], checksum & 0xFF);
 		return false;
 	}
 
-	printk("multitouch: data verification successful\r\n");
+	printk("multitouch: data verification successful\n");
 	return true;
 }
 
@@ -706,7 +803,7 @@ static void sendExecutePacket(void)
 
 	mt_spi_txrx(NORMAL_SPEED, tx, sizeof(tx), rx, sizeof(rx));
 
-	printk("multitouch: execute packet sent\r\n");
+	printk("multitouch: execute packet sent\n");
 }
 
 static void sendBlankDataPacket(void)
@@ -721,7 +818,7 @@ static void sendBlankDataPacket(void)
 
 	mt_spi_txrx(NORMAL_SPEED, tx, sizeof(tx), rx, sizeof(rx));
 
-	printk("multitouch: blank data packet sent\r\n");
+	printk("multitouch: blank data packet sent\n");
 }
 
 static int makeBootloaderDataPacket(u8* output, u32 destAddress, const u8* data, int dataLen, int* cksumOut)
@@ -762,9 +859,19 @@ static int makeBootloaderDataPacket(u8* output, u32 destAddress, const u8* data,
 	return dataLen;
 }
 
-static void multitouch_atn(u32 token)
+static irqreturn_t multitouch_atn(int irq, void* pToken)
 {
+	unsigned long flags;
+
+	if(!FirmwareLoaded)
+		return IRQ_HANDLED;
+
+	spin_lock_irqsave(&GotATNLock, flags);
 	++GotATN;
+	spin_unlock_irqrestore(&GotATNLock, flags);
+
+	schedule_work(&multitouch_workqueue);
+	return IRQ_HANDLED;
 }
 
 
